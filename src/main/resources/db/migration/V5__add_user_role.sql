@@ -1,0 +1,3 @@
+ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'ROLE_USER';
+
+UPDATE users SET role = 'ROLE_ADMIN' WHERE username = 'admin';

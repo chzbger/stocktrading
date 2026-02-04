@@ -1,0 +1,3 @@
+ALTER TABLE users ADD COLUMN broker_type VARCHAR(20);
+ALTER TABLE users ADD COLUMN ls_app_key VARCHAR(255);
+ALTER TABLE users ADD COLUMN ls_app_secret VARCHAR(255);

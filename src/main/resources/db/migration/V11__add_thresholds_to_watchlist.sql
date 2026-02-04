@@ -1,0 +1,2 @@
+ALTER TABLE watchlist ADD COLUMN buy_threshold DOUBLE DEFAULT 0.6;
+ALTER TABLE watchlist ADD COLUMN sell_threshold DOUBLE DEFAULT 0.6;

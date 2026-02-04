@@ -1,0 +1,67 @@
+# Java / Gradle
+build/
+.gradle/
+bin/
+out/
+*.class
+*.jar
+*.war
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.classpath
+*.project
+*.settings/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Python / AI Module
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Project Specific Assets
+token.dat
+ai_module/token.dat
+logs/
+*.log
+
+# Data / DB
+data/stockdb.mv.db
+data/stockdb.trace.db
+data/*.db
+
+# Secrets
+.env
+# Note: .env.example is kept (not ignored)
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# ai
+ai-data/
+ai-etc/
+ai_module/
+
+# Project exclude paths
+/docs/
+/gradle/
+
+# etc
+.env.example
+win/
