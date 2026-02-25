@@ -93,7 +93,7 @@ public class TradingService implements TradingUseCase {
         Map<String, AiModelPort.PredictionResult> predictions = fetchPredictions(activeItems, candleCache);
 
         // 5. 주문 실행 + 알림
-        executePredictionOrders(activeItems, userMap, predictions, candleCache);
+        executeOrderByPrediction(activeItems, userMap, predictions, candleCache);
 
         log.info("[Cycle] ========== Trading Cycle End ==========");
     }
@@ -289,7 +289,7 @@ public class TradingService implements TradingUseCase {
         return predictions;
     }
 
-    private void executePredictionOrders(List<TradingTarget> items,
+    private void executeOrderByPrediction(List<TradingTarget> items,
                                           Map<Long, User> userMap,
                                           Map<String, AiModelPort.PredictionResult> predictions,
                                           Map<String, CandleData> candleCache) {
@@ -309,7 +309,7 @@ public class TradingService implements TradingUseCase {
                     ? StockOrder.OrderType.BUY : StockOrder.OrderType.SELL;
 
             try {
-                CandleData candles = candleCache.get(predTicker);
+                CandleData candles = candleCache.get(item.getTicker());
                 BigDecimal price = BigDecimal.ZERO;
                 if (candles != null && !candles.minute().isEmpty()) {
                     price = candles.minute().get(candles.minute().size() - 1).getClose();
