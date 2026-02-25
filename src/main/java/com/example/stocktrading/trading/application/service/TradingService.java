@@ -201,6 +201,9 @@ public class TradingService implements TradingUseCase {
             LocalTime end = user.getTradingEndTime();
             if (start == null || end == null) return true;
 
+            if (start.isAfter(end)) {
+                return !now.isBefore(start) || !now.isAfter(end);
+            }
             return !now.isBefore(start) && !now.isAfter(end);
         }).collect(Collectors.toCollection(ArrayList::new));
     }
