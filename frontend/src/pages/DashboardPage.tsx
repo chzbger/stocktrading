@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, KeyboardEvent, ChangeEvent } from 'react'
+import { useState, useEffect, useRef, useCallback, KeyboardEvent, ChangeEvent } from 'react'
 import {
     Box,
     AppBar,
@@ -44,7 +44,7 @@ import {
 } from '@mui/icons-material'
 import axios, { AxiosInstance, AxiosError } from 'axios'
 import SettingsModal from '../components/SettingsModal'
-import type { ApiResponse, Stock, TradingLog, ProfitStats, Asset, AiStatus } from '../types'
+import type { ApiResponse, Stock, TradingLog, ProfitStats, Asset, AiStatus, BrokerInfo, UserSettings } from '../types'
 
 // Token expiry time (24 hours - common standard)
 const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000
@@ -59,7 +59,9 @@ interface Thresholds {
     stopLoss: number;
     baseTicker: string;
     isInverse: boolean;
-    trainingPeriodYears: number;
+    trailingStop: number;
+    trailingStopEnabled: boolean;
+    trailingWindowMinutes: number;
 }
 
 interface RealizedProfitCardProps {
@@ -95,6 +97,8 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
     const [profitStats, setProfitStats] = useState<ProfitStats>({ realizedProfit: 0 })
     const [asset, setAsset] = useState<Asset>({ totalAsset: 0, usdDeposit: 0, ownedStocks: [] })
     const [tickerInput, setTickerInput] = useState<string>('')
+    const [brokerIdInput, setBrokerIdInput] = useState<string>('')
+    const [brokerInfos, setBrokerInfos] = useState<BrokerInfo[]>([])
     const [settingsOpen, setSettingsOpen] = useState<boolean>(false)
     const [isBrokerConnected, setIsBrokerConnected] = useState<boolean>(true)
 
@@ -106,18 +110,17 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
     // Threshold Modal State
     const [thresholdModalOpen, setThresholdModalOpen] = useState<boolean>(false)
     const [editingStock, setEditingStock] = useState<Stock | null>(null)
-    const [thresholds, setThresholds] = useState<Thresholds>({ buy: 60, sell: 60, stopLoss: 3, baseTicker: '', isInverse: false, trainingPeriodYears: 4 })
+    const [thresholds, setThresholds] = useState<Thresholds>({ buy: 10, sell: 10, stopLoss: 3, baseTicker: '', isInverse: false, trailingStop: 2, trailingStopEnabled: true, trailingWindowMinutes: 10 })
 
     // Create axios instance with interceptor for token expiry
-    const apiClient: AxiosInstance = useMemo(() => {
-        const client = axios.create()
+    const apiClient: AxiosInstance = axios.create()
 
-        // Response interceptor for handling 401 errors (token expiry)
-        client.interceptors.response.use(
+    // Response interceptor for handling 401 errors (token expiry)
+    useEffect(() => {
+        const interceptor = apiClient.interceptors.response.use(
             (response) => response,
             (error: AxiosError) => {
                 if (error.response?.status === 401) {
-                    // Token expired or invalid - logout
                     console.warn('Token expired or invalid, logging out...')
                     localStorage.removeItem('authToken')
                     localStorage.removeItem('tokenTime')
@@ -127,8 +130,7 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                 return Promise.reject(error)
             }
         )
-
-        return client
+        return () => { apiClient.interceptors.response.eject(interceptor) }
     }, [onLogout])
 
     useEffect(() => {
@@ -160,11 +162,15 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
 
     const checkBrokerConnection = async (): Promise<void> => {
         try {
-            const response = await apiClient.get<ApiResponse<{ activeBrokerId: number | null }>>('/api/settings', {
+            const response = await apiClient.get<ApiResponse<UserSettings>>('/api/settings', {
                 headers: getAuthHeaders(),
             })
-            const { activeBrokerId } = response.data.data
+            const { activeBrokerId, brokerInfos: infos } = response.data.data
             setIsBrokerConnected(!!activeBrokerId)
+            setBrokerInfos(infos || [])
+            if (infos && infos.length > 0 && !brokerIdInput) {
+                setBrokerIdInput(String(activeBrokerId || infos[0].id))
+            }
         } catch (err) {
             setIsBrokerConnected(false)
         }
@@ -184,7 +190,7 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
 
     const fetchStocks = async (): Promise<void> => {
         try {
-            const response = await apiClient.get<ApiResponse<Stock[]>>('/api/stocks', {
+            const response = await apiClient.get<ApiResponse<Stock[]>>('/api/trading-target', {
                 headers: getAuthHeaders(),
             })
             const stockList = response.data.data
@@ -192,7 +198,7 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
             // Fetch AI training status for each ticker in parallel
             const aiDataPromises = stockList.map(async (stock) => {
                 try {
-                    const statusRes = await apiClient.get<ApiResponse<AiStatus>>(`/api/ai/${stock.ticker}/status`, { headers: getAuthHeaders() })
+                    const statusRes = await apiClient.post<ApiResponse<AiStatus>>(`/api/ai/${stock.ticker}/training-status`, {}, { headers: getAuthHeaders() })
                     return {
                         ticker: stock.ticker,
                         status: statusRes.data.data,
@@ -221,6 +227,72 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
         }
     }
 
+    // Ref to track training tickers for polling (avoids useCallback dependency issues)
+    const trainingTickersRef = useRef<string[]>([])
+    useEffect(() => {
+        trainingTickersRef.current = stocks.filter(s => s.trainingStatus === 'TRAINING').map(s => s.ticker)
+    }, [stocks])
+
+    // Check and update training status for TRAINING tickers (calls Python to check actual status)
+    const checkTrainingStatus = useCallback(async (): Promise<void> => {
+        const tickers = trainingTickersRef.current
+        if (tickers.length === 0) return
+
+        const promises = tickers.map(async (ticker) => {
+            try {
+                const statusRes = await apiClient.post<ApiResponse<AiStatus>>(
+                    `/api/ai/${ticker}/training-status`,
+                    {},
+                    { headers: getAuthHeaders() }
+                )
+                return { ticker, status: statusRes.data.data }
+            } catch {
+                return { ticker, status: null }
+            }
+        })
+
+        const results = await Promise.all(promises)
+
+        // Update stocks with changed statuses
+        results.forEach(({ ticker, status }) => {
+            if (status && status.status !== 'TRAINING') {
+                setStocks(prev => prev.map(s =>
+                    s.ticker === ticker
+                        ? { ...s, trainingStatus: status.status as Stock['trainingStatus'] }
+                        : s
+                ))
+            }
+        })
+    }, [apiClient])
+
+    // Training status polling (every 10 seconds for TRAINING tickers)
+    const trainingPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+    const hasTrainingTickers = stocks.some(s => s.trainingStatus === 'TRAINING')
+
+    useEffect(() => {
+        if (hasTrainingTickers) {
+            // Start polling if not already polling
+            if (!trainingPollRef.current) {
+                trainingPollRef.current = setInterval(() => {
+                    checkTrainingStatus()
+                }, 10000) // 10 seconds
+            }
+        } else {
+            // Stop polling if no training tickers
+            if (trainingPollRef.current) {
+                clearInterval(trainingPollRef.current)
+                trainingPollRef.current = null
+            }
+        }
+
+        return () => {
+            if (trainingPollRef.current) {
+                clearInterval(trainingPollRef.current)
+                trainingPollRef.current = null
+            }
+        }
+    }, [hasTrainingTickers, checkTrainingStatus])
+
     const fetchProfitStats = async (): Promise<void> => {
         try {
             const response = await apiClient.get<ApiResponse<ProfitStats>>('/api/trade-log/stats', {
@@ -246,7 +318,8 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
     const handleAddStock = async (): Promise<void> => {
         if (!tickerInput.trim()) return
         try {
-            await apiClient.post('/api/stocks', { ticker: tickerInput }, {
+            const brokerId = brokerIdInput ? Number(brokerIdInput) : null
+            await apiClient.post('/api/trading-target', { ticker: tickerInput, brokerId }, {
                 headers: getAuthHeaders(),
             })
             setTickerInput('')
@@ -257,15 +330,17 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
         }
     }
 
-    const handleOpenThresholdModal = (stock: Stock): void => {
+    const handleOpenThresholdModal = async (stock: Stock): Promise<void> => {
         setEditingStock(stock)
         setThresholds({
-            buy: stock.buyThreshold || 60,
-            sell: stock.sellThreshold || 60,
+            buy: stock.buyThreshold || 10,
+            sell: stock.sellThreshold || 10,
             stopLoss: parseFloat(stock.stopLossPercentage) || 3,
             baseTicker: stock.baseTicker || '',
             isInverse: stock.isInverse || false,
-            trainingPeriodYears: stock.trainingPeriodYears || 4
+            trailingStop: parseFloat(stock.trailingStopPercentage) || 2,
+            trailingStopEnabled: stock.trailingStopEnabled ?? true,
+            trailingWindowMinutes: stock.trailingWindowMinutes || 10,
         })
         setThresholdModalOpen(true)
     }
@@ -273,17 +348,21 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
     const handleSaveThresholds = async (): Promise<void> => {
         if (!editingStock) return
         try {
-            await apiClient.patch(`/api/stocks/${editingStock.id}/thresholds`, {
+            await apiClient.put(`/api/trading-target/${editingStock.id}`, {
                 buyThreshold: thresholds.buy,
                 sellThreshold: thresholds.sell,
                 stopLossPercentage: String(thresholds.stopLoss),
-                // Send empty string to clear, omit field to keep unchanged
-                baseTicker: thresholds.baseTicker,  // '' = clear, 'QQQ' = set
+                baseTicker: thresholds.baseTicker,
                 isInverse: thresholds.isInverse,
-                trainingPeriodYears: thresholds.trainingPeriodYears
+                trailingStopPercentage: String(thresholds.trailingStop),
+                trailingStopEnabled: thresholds.trailingStopEnabled,
+                trailingWindowMinutes: thresholds.trailingWindowMinutes,
+                brokerId: editingStock.brokerId,
+                holdingQuantity: editingStock.holdingQuantity,
             }, {
                 headers: getAuthHeaders(),
             })
+
             setThresholdModalOpen(false)
             fetchStocks()
         } catch (err) {
@@ -292,10 +371,10 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
         }
     }
 
-    const handleToggleTrading = async (id: number, ticker: string, currentStatus: boolean): Promise<void> => {
+    const handleToggleTrading = async (stock: Stock): Promise<void> => {
         try {
-            await apiClient.patch(`/api/stocks/${ticker}/trading`, null, {
-                params: { active: !currentStatus },
+            await apiClient.patch(`/api/trading-target/${stock.ticker}/trading`, null, {
+                params: { active: !stock.isTrading },
                 headers: getAuthHeaders(),
             })
             fetchStocks()
@@ -336,7 +415,7 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
     const handleDeleteStock = async (id: number, ticker: string): Promise<void> => {
         if (!window.confirm(`${ticker} 종목을 관심 목록에서 삭제하시겠습니까?\n(매매가 진행 중이라면 먼저 중지됩니다)`)) return
         try {
-            await apiClient.delete(`/api/stocks/${id}`, {
+            await apiClient.delete(`/api/trading-target/${id}`, {
                 headers: getAuthHeaders(),
             })
             fetchStocks()
@@ -346,7 +425,7 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
         }
     }
 
-    const handleTrainAI = async (stockId: number, ticker: string): Promise<void> => {
+    const handleTrainAI = async (_stockId: number, ticker: string): Promise<void> => {
         try {
             await apiClient.post(`/api/ai/${ticker}/train`, {}, {
                 headers: getAuthHeaders(),
@@ -360,12 +439,12 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
         }
     }
 
-    const formatCurrency = (value: number): string => {
-        return new Intl.NumberFormat('ko-KR', { style: 'currency', currency: 'KRW' }).format(value)
-    }
-
     const formatUSD = (value: number): string => {
         return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value)
+    }
+
+    const formatCurrency = (value: number): string => {
+        return new Intl.NumberFormat('ko-KR', { style: 'currency', currency: 'KRW' }).format(value)
     }
 
     const formatTime = (isoString: string): string => {
@@ -458,7 +537,7 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                 <Card sx={{ mb: 4 }}>
                     <CardContent sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
                         <TextField
-                            label="티커 입력 (예: 005930)"
+                            label="티커 입력 (예: NVDA)"
                             variant="outlined"
                             size="small"
                             value={tickerInput}
@@ -466,6 +545,22 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                             sx={{ flexGrow: 1 }}
                             onKeyPress={handleKeyPress}
                         />
+                        <TextField
+                            label="증권사"
+                            select
+                            size="small"
+                            value={brokerIdInput}
+                            onChange={(e) => setBrokerIdInput(e.target.value)}
+                            SelectProps={{ native: true }}
+                            sx={{ minWidth: 160 }}
+                        >
+                            <option value="">기본 (활성 증권사)</option>
+                            {brokerInfos.map(b => (
+                                <option key={b.id} value={b.id}>
+                                    {b.brokerType} ({b.accountNumber || '미설정'})
+                                </option>
+                            ))}
+                        </TextField>
                         <Button
                             variant="contained"
                             startIcon={<Add />}
@@ -480,31 +575,13 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                 <Box sx={{ mb: 2, display: 'flex', gap: 2, justifyContent: 'flex-end' }}>
                     <Button
                         variant="contained"
-                        color="primary"
-                        startIcon={<PlayArrow />}
-                        onClick={async () => {
-                            if (!window.confirm('모든 종목의 자동매매를 시작하시겠습니까?')) return
-                            const promises = stocks
-                                .filter(s => !s.isTrading)
-                                .map(s => apiClient.patch(`/api/stocks/${s.ticker}/trading`, null, {
-                                    params: { active: true },
-                                    headers: getAuthHeaders(),
-                                }))
-                            await Promise.all(promises)
-                            fetchStocks()
-                        }}
-                    >
-                        전체 시작
-                    </Button>
-                    <Button
-                        variant="contained"
                         color="error"
                         startIcon={<Stop />}
                         onClick={async () => {
                             if (!window.confirm('모든 종목의 자동매매를 정지하시겠습니까?')) return
                             const promises = stocks
                                 .filter(s => s.isTrading)
-                                .map(s => apiClient.patch(`/api/stocks/${s.ticker}/trading`, null, {
+                                .map(s => apiClient.patch(`/api/trading-target/${s.ticker}/trading`, null, {
                                     params: { active: false },
                                     headers: getAuthHeaders(),
                                 }))
@@ -513,6 +590,29 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                         }}
                     >
                         전체 중지
+                    </Button>
+                    <Button
+                        variant="outlined"
+                        color="error"
+                        startIcon={<Delete />}
+                        onClick={async () => {
+                            const trainedStocks = stocks.filter(s => s.trainingStatus === 'COMPLETED' || s.trainingStatus === 'FAILED')
+                            if (trainedStocks.length === 0) {
+                                alert('삭제할 학습 데이터가 없습니다.')
+                                return
+                            }
+                            if (!window.confirm(`${trainedStocks.length}개 티커의 학습 데이터를 모두 삭제하시겠습니까?\n(${trainedStocks.map(s => s.ticker).join(', ')})`)) return
+                            const results = await Promise.allSettled(
+                                trainedStocks.map(s => apiClient.delete(`/api/ai/${s.ticker}/train`, { headers: getAuthHeaders() }))
+                            )
+                            const failed = results.filter(r => r.status === 'rejected').length
+                            if (failed > 0) {
+                                alert(`${trainedStocks.length - failed}개 삭제 완료, ${failed}개 실패`)
+                            }
+                            fetchStocks()
+                        }}
+                    >
+                        전체 학습 데이터 삭제
                     </Button>
                 </Box>
 
@@ -531,20 +631,24 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                             </TableRow>
                         </TableHead>
                         <TableBody>
-                            {stocks.map((stock) => (
+                            {stocks.map((stock) => {
+                                const owned = asset.ownedStocks.find(s => s.stockCode === stock.ticker);
+                                const currentPrice = owned?.currentPrice ?? 0;
+                                const profitRate = owned?.profitRate ?? 0;
+                                return (
                                 <TableRow key={stock.id}>
                                     <TableCell>{stock.ticker}</TableCell>
-                                    <TableCell align="right">{formatUSD(stock.currentPrice)}</TableCell>
-                                    <TableCell align="right">{stock.quantity}</TableCell>
+                                    <TableCell align="right">{formatUSD(currentPrice)}</TableCell>
+                                    <TableCell align="right">{stock.holdingQuantity}</TableCell>
                                     <TableCell align="right">
                                         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 0.5 }}>
-                                            {stock.profitRate >= 0 ? (
+                                            {profitRate >= 0 ? (
                                                 <TrendingUp color="success" fontSize="small" />
                                             ) : (
                                                 <TrendingDown color="error" fontSize="small" />
                                             )}
-                                            <Typography color={stock.profitRate >= 0 ? 'success.main' : 'error.main'}>
-                                                {stock.profitRate >= 0 ? '+' : ''}{stock.profitRate.toFixed(2)}%
+                                            <Typography color={profitRate >= 0 ? 'success.main' : 'error.main'}>
+                                                {profitRate >= 0 ? '+' : ''}{profitRate.toFixed(2)}%
                                             </Typography>
                                         </Box>
                                     </TableCell>
@@ -552,7 +656,23 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                                         <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.5 }}>
                                             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1 }}>
                                                 {(() => {
+                                                    const hasBaseTicker = !!stock.baseTicker
                                                     const status = stock.trainingStatus || 'PENDING'
+
+                                                    if (hasBaseTicker) {
+                                                        return (
+                                                            <Tooltip title={`${stock.baseTicker} 모델 사용 중 (자체 학습 불필요)`}>
+                                                                <Chip
+                                                                    label={`${stock.baseTicker} 모델`}
+                                                                    size="small"
+                                                                    color="info"
+                                                                    variant="outlined"
+                                                                    icon={<Psychology />}
+                                                                />
+                                                            </Tooltip>
+                                                        )
+                                                    }
+
                                                     if (status === 'COMPLETED') {
                                                         return <Chip label="학습완료" color="success" size="small" icon={<Psychology />} />
                                                     } else if (status === 'TRAINING') {
@@ -593,7 +713,7 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                                                     </IconButton>
                                                 </Tooltip>
 
-                                                {(stock.trainingStatus === 'COMPLETED' || stock.trainingStatus === 'FAILED') && (
+                                                {!stock.baseTicker && (stock.trainingStatus === 'COMPLETED' || stock.trainingStatus === 'FAILED') && (
                                                     <Tooltip title="학습 초기화">
                                                         <IconButton size="small" color="error" onClick={() => handleResetTraining(stock.ticker)}>
                                                             <Delete fontSize="small" />
@@ -611,6 +731,11 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                                             {/* Threshold Display */}
                                             <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem' }}>
                                                 B:{stock.buyThreshold}% / S:{stock.sellThreshold}% / SL:{stock.stopLossPercentage}%
+                                                {stock.trailingStopEnabled && (
+                                                    <span style={{ marginLeft: 4, color: '#81c784' }}>
+                                                        TS:{stock.trailingStopPercentage}%/{stock.trailingWindowMinutes}m
+                                                    </span>
+                                                )}
                                                 {stock.baseTicker && (
                                                     <span style={{ marginLeft: 4, color: stock.isInverse ? '#f48fb1' : '#90caf9' }}>
                                                         ({stock.isInverse ? '↓' : '→'}{stock.baseTicker})
@@ -622,7 +747,7 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                                     <TableCell align="center">
                                         <IconButton
                                             color={stock.isTrading ? 'error' : 'primary'}
-                                            onClick={() => handleToggleTrading(stock.id, stock.ticker, stock.isTrading)}
+                                            onClick={() => handleToggleTrading(stock)}
                                         >
                                             {stock.isTrading ? <Stop /> : <PlayArrow />}
                                         </IconButton>
@@ -639,7 +764,8 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                                         </Tooltip>
                                     </TableCell>
                                 </TableRow>
-                            ))}
+                                );
+                            })}
                             {stocks.length === 0 && (
                                 <TableRow>
                                     <TableCell colSpan={7} align="center" sx={{ py: 4 }}>
@@ -717,7 +843,7 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                 <DialogContent>
                     <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
                         AI가 매매를 결심하기 위한 최소 확률을 설정합니다. (0 ~ 100)<br />
-                        높을수록 신중하게 거래합니다. (권장: 60)
+                        높을수록 신중하게 거래합니다. (권장: 10)
                     </Typography>
                     <Grid container spacing={2}>
                         <Grid item xs={6}>
@@ -760,31 +886,62 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                         </Grid>
                     </Grid>
 
-                    <Divider sx={{ my: 3 }} />
-
-                    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                        <strong>학습 기간 설정</strong><br />
-                        이 티커의 AI 모델 학습에 사용할 데이터 기간을 설정합니다.<br />
-                        기간이 길수록 더 많은 패턴을 학습하지만, 최근 트렌드 반영이 약해질 수 있습니다.
+                    <Typography variant="body2" color="text.secondary" sx={{ mt: 3, mb: 2 }}>
+                        <strong>트레일링 스탑</strong><br />
+                        수익 구간에서 최근 N분 캔들 고점 대비 하락 시 자동 매도합니다.<br />
+                        <strong>권장:</strong> 고변동성(TSLA,PLTR) 3%/5분, 중변동성(NVDA) 2.5%/5분, ETF 1~1.5%/15분
                     </Typography>
-                    <Grid container spacing={2}>
-                        <Grid item xs={12}>
+                    <Grid container spacing={2} alignItems="center">
+                        <Grid item xs={4}>
                             <TextField
-                                label="학습 기간 (년)"
+                                label="하락률 (%)"
+                                type="number"
+                                inputProps={{ step: 0.5, min: 0.5, max: 10 }}
+                                fullWidth
+                                value={thresholds.trailingStop}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => setThresholds({ ...thresholds, trailingStop: parseFloat(e.target.value) || 2 })}
+                                disabled={!thresholds.trailingStopEnabled}
+                            />
+                        </Grid>
+                        <Grid item xs={4}>
+                            <TextField
+                                label="윈도우 (분)"
                                 select
                                 fullWidth
-                                value={thresholds.trainingPeriodYears}
-                                onChange={(e) => setThresholds({ ...thresholds, trainingPeriodYears: parseInt(e.target.value) || 4 })}
+                                value={thresholds.trailingWindowMinutes}
+                                onChange={(e) => setThresholds({ ...thresholds, trailingWindowMinutes: parseInt(e.target.value) || 10 })}
                                 SelectProps={{ native: true }}
-                                helperText="권장: 변동성 높은 종목 1~2년, 안정적 종목 3~4년"
+                                disabled={!thresholds.trailingStopEnabled}
                             >
-                                <option value={1}>1년</option>
-                                <option value={2}>2년</option>
-                                <option value={3}>3년</option>
-                                <option value={4}>4년</option>
+                                <option value={5}>5분</option>
+                                <option value={10}>10분</option>
+                                <option value={15}>15분</option>
+                                <option value={20}>20분</option>
+                                <option value={30}>30분</option>
                             </TextField>
                         </Grid>
+                        <Grid item xs={4}>
+                            <FormControlLabel
+                                control={
+                                    <Switch
+                                        checked={thresholds.trailingStopEnabled}
+                                        onChange={(e) => setThresholds({ ...thresholds, trailingStopEnabled: e.target.checked })}
+                                        color="success"
+                                    />
+                                }
+                                label={
+                                    <Box>
+                                        <Typography variant="body2">활성화</Typography>
+                                    </Box>
+                                }
+                            />
+                        </Grid>
                     </Grid>
+                    {thresholds.trailingStopEnabled && (
+                        <Alert severity="success" sx={{ mt: 2 }}>
+                            수익 중일 때, 최근 {thresholds.trailingWindowMinutes}분 고점 대비 {thresholds.trailingStop}% 하락하면 자동 매도합니다.
+                        </Alert>
+                    )}
 
                     <Divider sx={{ my: 3 }} />
 

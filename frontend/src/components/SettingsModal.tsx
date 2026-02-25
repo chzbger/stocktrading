@@ -23,9 +23,11 @@ import {
     ListItemIcon,
     Chip,
     AlertColor,
-    SelectChangeEvent
+    SelectChangeEvent,
+    Switch,
+    FormControlLabel
 } from '@mui/material'
-import { Key, Save, Delete, Add, CheckCircle, People, AccessTime } from '@mui/icons-material'
+import { Key, Save, Delete, Add, CheckCircle, People, AccessTime, Notifications } from '@mui/icons-material'
 import axios, { AxiosError } from 'axios'
 import { useNavigate } from 'react-router-dom'
 import type { ApiResponse, UserSettings, BrokerInfo } from '../types'
@@ -53,6 +55,11 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
     const [loading, setLoading] = useState<boolean>(false)
     const [message, setMessage] = useState<Message>({ type: '', text: '' })
 
+    // Notification State
+    const [notificationEnabled, setNotificationEnabled] = useState<boolean>(false)
+    const [telegramBotToken, setTelegramBotToken] = useState<string>('')
+    const [telegramChatId, setTelegramChatId] = useState<string>('')
+
     // Form State for Adding/Editing
     const [isAdding, setIsAdding] = useState<boolean>(false)
     const [newBrokerType, setNewBrokerType] = useState<'KIS' | 'LS'>('KIS')
@@ -77,6 +84,9 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
             setActiveBrokerId(payload.activeBrokerId)
             if (payload.tradingStartTime) setTradingStartTime(String(payload.tradingStartTime).substring(0, 5))
             if (payload.tradingEndTime) setTradingEndTime(String(payload.tradingEndTime).substring(0, 5))
+            setNotificationEnabled(payload.notificationEnabled ?? false)
+            setTelegramBotToken(payload.telegramBotToken ?? '')
+            setTelegramChatId(payload.telegramChatId ?? '')
         } catch (err) {
             console.error("Failed to fetch settings", err)
         }
@@ -112,6 +122,22 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
     const handleGoToUserManagement = (): void => {
         onClose()
         navigate('/users')
+    }
+
+    const handleSaveNotification = async (): Promise<void> => {
+        try {
+            await axios.post('/api/settings/notification', {
+                enabled: notificationEnabled,
+                botToken: telegramBotToken,
+                chatId: telegramChatId
+            }, {
+                headers: getAuthHeaders(),
+            })
+            setMessage({ type: 'success', text: '알림 설정이 저장되었습니다.' })
+        } catch (err) {
+            const axiosError = err as AxiosError<ApiResponse<null>>
+            setMessage({ type: 'error', text: '저장 실패: ' + (axiosError.response?.data?.message || axiosError.message) })
+        }
     }
 
     const resetForm = (): void => {
@@ -224,6 +250,53 @@ function SettingsModal({ open, onClose }: SettingsModalProps) {
                                     저장
                                 </Button>
                             </Box>
+                        </Box>
+
+                        {/* Notification Section */}
+                        <Box sx={{ mb: 4, p: 2, bgcolor: 'background.default', borderRadius: 1 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                                <Notifications color="primary" />
+                                <Typography variant="subtitle1" fontWeight="bold">알림 설정</Typography>
+                            </Box>
+                            <FormControlLabel
+                                control={
+                                    <Switch
+                                        checked={notificationEnabled}
+                                        onChange={(e) => setNotificationEnabled(e.target.checked)}
+                                    />
+                                }
+                                label="텔레그램 알림 활성화"
+                            />
+                            {notificationEnabled && (
+                                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 2 }}>
+                                    <TextField
+                                        fullWidth
+                                        label="봇 토큰"
+                                        value={telegramBotToken}
+                                        onChange={(e) => setTelegramBotToken(e.target.value)}
+                                        size="small"
+                                        placeholder="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+                                    />
+                                    <TextField
+                                        fullWidth
+                                        label="채팅 ID"
+                                        value={telegramChatId}
+                                        onChange={(e) => setTelegramChatId(e.target.value)}
+                                        size="small"
+                                        placeholder="123456789"
+                                    />
+                                    <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+                                        <Button
+                                            variant="contained"
+                                            size="small"
+                                            startIcon={<Save />}
+                                            onClick={handleSaveNotification}
+                                        >
+                                            저장
+                                        </Button>
+                                    </Box>
+                                </Box>
+                            )}
                         </Box>
 
                         <Divider sx={{ mb: 2 }} />

@@ -30,24 +30,46 @@ export interface UserSettings {
   activeBrokerId: number | null;
   tradingStartTime?: string;
   tradingEndTime?: string;
+  notificationEnabled?: boolean;
+  telegramBotToken?: string;
+  telegramChatId?: string;
 }
 
 // Stock & Trading Types
 export interface Stock {
   id: number;
   ticker: string;
-  currentPrice: number;
-  quantity: number;
-  profitRate: number;
   isTrading: boolean;
   buyThreshold: number;
   sellThreshold: number;
   stopLossPercentage: string;
   baseTicker: string | null;
   isInverse: boolean;
-  trainingPeriodYears: number;
+  trailingStopPercentage: string;
+  trailingStopEnabled: boolean;
+  trailingWindowMinutes: number;
+  brokerId: number | null;
+  holdingQuantity: number;
   // AI status (fetched separately)
   trainingStatus?: 'PENDING' | 'TRAINING' | 'COMPLETED' | 'FAILED';
+}
+
+export interface PredictionResult {
+  prediction: 'BUY' | 'SELL' | 'HOLD';
+  confidence: number;
+  probabilities: number[];
+  executed?: boolean;
+  orderMessage?: string;
+}
+
+export interface PredictionItem {
+  tradingTargetId: number;
+  ticker: string;
+  prediction: 'BUY' | 'SELL' | 'HOLD';
+  confidence: number;
+  probabilities: number[];
+  executed: boolean;
+  orderMessage: string | null;
 }
 
 export interface AiStatus {
