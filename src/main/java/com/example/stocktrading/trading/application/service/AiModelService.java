@@ -36,7 +36,7 @@ public class AiModelService implements AiModelUseCase {
         }
 
         // 1. PENDING 상태로 저장 (UK 위반 → 하루 1번 초과)
-        String today = ZonedDateTime.now().format(DateTimeFormatter.BASIC_ISO_DATE);
+        String today = ZonedDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
         TrainingHistory pending = TrainingHistory.builder()
                 .ticker(ticker).trainDate(today).userId(userId)
                 .status(TrainingStatus.PENDING)
