@@ -7,9 +7,7 @@ import com.example.stocktrading.trading.application.port.in.TradingUseCase;
 import com.example.stocktrading.trading.application.port.out.AiModelPort;
 import com.example.stocktrading.trading.application.port.out.AiTrainingHistoryPort;
 import com.example.stocktrading.trading.application.port.out.BrokerApiPort;
-import com.example.stocktrading.trading.application.port.out.PendingOrderPort;
 import com.example.stocktrading.trading.application.port.out.TradeLogPort;
-import com.example.stocktrading.trading.domain.PendingOrder;
 import com.example.stocktrading.trading.application.port.out.TradingTargetPort;
 import com.example.stocktrading.trading.domain.TradingTarget;
 import com.example.stocktrading.trading.domain.TrainingHistory;
@@ -25,7 +23,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
+import java.time.Duration;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -44,11 +42,12 @@ public class TradingService implements TradingUseCase {
     private final AiTrainingHistoryPort aiTrainingHistoryPort;
     private final BrokerApiPort brokerApiPort;
     private final AssetUseCase assetUseCase;
-    private final PendingOrderPort pendingOrderPort;
     private final AiModelPort aiModelPort;
     private final NotificationPort notificationPort;
 
     private static final int CANCEL_TIMEOUT_MINUTES = 2;
+    private static final int STALE_PENDING_MINUTES = 10;
+    private static final int MAX_HOLDING_MINUTES = 25;
 
     private record CandleData(List<StockCandle> minute, List<StockCandle> fiveMin) {}
 
@@ -57,6 +56,9 @@ public class TradingService implements TradingUseCase {
     public void initialize() {
         // 학습 진행중 상태인것들 취소 처리
         cleanupTraining();
+
+        // PENDING 정리 (10분 이상)
+        cleanupPendingOrders();
     }
 
     @Override
@@ -74,6 +76,42 @@ public class TradingService implements TradingUseCase {
         if (activeItems.isEmpty()) return;
 
         log.info("[Cycle] ========== Trading Cycle Start (Active: {}) ==========", activeItems.size());
+
+        // 0-1. PENDING SELL 가드: PENDING SELL이 있는 ticker는 제외
+        activeItems.removeIf(item ->
+                tradeLogPort.hasPendingSell(item.getUserId(), item.getTicker()));
+
+        // 0-2. 보유 타임아웃 체크: 첫 매수 후 MAX_HOLDING_MINUTES 초과 시 강제 매도
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Asia/Seoul"));
+        for (TradingTarget item : new ArrayList<>(activeItems)) {
+            User user = userMap.get(item.getUserId());
+            if (user == null) continue;
+
+            int holding = tradeLogPort.getHoldingCount(item.getUserId(), item.getTicker());
+            if (holding <= 0) continue;
+
+            ZonedDateTime openedAt = tradeLogPort.getPositionOpenedAt(item.getUserId(), item.getTicker());
+            if (openedAt == null) continue;
+
+            long minutes = Duration.between(openedAt, now).toMinutes();
+            if (minutes >= MAX_HOLDING_MINUTES) {
+                try {
+                    BigDecimal currentPrice = brokerApiPort.getCurrentPrice(user, item.getTicker());
+                    if (currentPrice != null && currentPrice.compareTo(BigDecimal.ZERO) > 0) {
+                        executeOrder(user, item, StockOrder.OrderType.SELL, currentPrice);
+                        notificationPort.sendMessage(user.getUserId(),
+                                String.format("[Timeout] %s force sold after %dmin", item.getTicker(), minutes));
+                    }
+                } catch (Exception e) {
+                    log.error("[Timeout] {} force sell failed: {}", item.getTicker(), e.getMessage());
+                }
+            }
+        }
+
+        if (activeItems.isEmpty()) {
+            log.info("[Cycle] ========== Trading Cycle End (all filtered) ==========");
+            return;
+        }
 
         // 1. 손절 체크
         List<TradingTarget> stopLossItems = executeStopLoss(activeItems, userMap);
@@ -98,48 +136,6 @@ public class TradingService implements TradingUseCase {
         log.info("[Cycle] ========== Trading Cycle End ==========");
     }
 
-    /**
-     * db와 실제 보유수량과의 sync
-     */
-    @Override
-    @Transactional
-    public void syncHoldingQuantities() {
-        List<TradingTarget> activeItems = tradingTargetPort.findActiveItems();
-        if (activeItems.isEmpty()) return;
-
-        Map<Long, List<TradingTarget>> byUser = activeItems.stream()
-                .collect(Collectors.groupingBy(TradingTarget::getUserId));
-
-        for (Map.Entry<Long, List<TradingTarget>> entry : byUser.entrySet()) {
-            User user = userPort.findById(entry.getKey()).orElse(null);
-            if (user == null) continue;
-
-            try {
-                Asset asset = assetUseCase.getAccountAsset(user.getUserId());
-                if (asset == null) continue;
-
-                Map<String, Integer> brokerPositions = new HashMap<>();
-                if (asset.getOwnedStocks() != null) {
-                    for (Asset.OwnedStock stock : asset.getOwnedStocks()) {
-                        brokerPositions.put(stock.getStockCode(), stock.getQuantity());
-                    }
-                }
-
-                for (TradingTarget item : entry.getValue()) {
-                    int brokerQty = brokerPositions.getOrDefault(item.getTicker(), 0);
-                    int dbQty = item.getHoldingQuantity();
-
-                    if (brokerQty != dbQty) {
-                        log.info("[보유수량] {} DB={} Broker={}, syncing", item.getTicker(), dbQty, brokerQty);
-                        tradingTargetPort.save(item.toBuilder().holdingQuantity(brokerQty).build());
-                    }
-                }
-            } catch (Exception e) {
-                log.error("[보유수량] Failed {}: {}", entry.getKey(), e.getMessage());
-            }
-        }
-    }
-
     public BrokerApiPort.OrderResult executeOrder(User user, TradingTarget item,
                                                     StockOrder.OrderType orderType, BigDecimal price) {
         int quantity;
@@ -148,8 +144,7 @@ public class TradingService implements TradingUseCase {
         } else {
             quantity = getSellQuantity(user, item);
             if (quantity <= 0) {
-                return new BrokerApiPort.OrderResult(false, TradeLog.OrderStatus.INSUFFICIENT_STOCK,
-                        "No holdings to sell");
+                return new BrokerApiPort.OrderResult(false, "No holdings to sell");
             }
         }
 
@@ -165,30 +160,102 @@ public class TradingService implements TradingUseCase {
 
         BrokerApiPort.OrderResult result = brokerApiPort.sendOrder(user, order);
 
-        TradeLog tradeLog = TradeLog.createWithStatus(
-                item.getUserId(), item.getTicker(), orderType, price, result.status());
-        tradeLogPort.save(tradeLog);
-
         if (result.success()) {
-            int delta = orderType == StockOrder.OrderType.BUY ? quantity : -quantity;
-            int newQty = Math.max(0, item.getHoldingQuantity() + delta);
-            tradingTargetPort.save(item.toBuilder().holdingQuantity(newQty).build());
-
-            if (result.orderId() != null) {
-                pendingOrderPort.save(PendingOrder.builder()
-                        .userId(user.getUserId())
-                        .ticker(item.getTicker())
-                        .orderId(result.orderId())
-                        .orderType(orderType.name())
-                        .orderTime(LocalDateTime.now())
-                        .build());
-            }
+            // PENDING으로 저장 (orderId 포함)
+            TradeLog tradeLog = TradeLog.createPending(
+                    item.getUserId(), item.getTicker(), orderType, price, result.orderId());
+            tradeLogPort.save(tradeLog);
+        } else {
+            // FAILED로 즉시 저장
+            TradeLog tradeLog = TradeLog.createFailed(
+                    item.getUserId(), item.getTicker(), orderType, price);
+            tradeLogPort.save(tradeLog);
         }
 
         return result;
     }
 
+    /**
+     * PENDING 주문 확인/취소 처리
+     */
+    @Override
+    @Transactional
+    public void handlePendingOrders() {
+        ZonedDateTime threshold = ZonedDateTime.now(ZoneId.of("Asia/Seoul")).minusMinutes(CANCEL_TIMEOUT_MINUTES);
+        List<TradeLog> pendings = tradeLogPort.findPendingBefore(threshold);
+
+        for (TradeLog pending : pendings) {
+            User user = userPort.findById(pending.getUserId()).orElse(null);
+            if (user == null) continue;
+
+            if (pending.getOrderId() == null) {
+                // orderId 없는 PENDING은 FAILED 처리
+                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.FAILED);
+                continue;
+            }
+
+            log.info("[PendingCheck] action: {} ticker: {} orderId: {}",
+                    pending.getAction(), pending.getTicker(), pending.getOrderId());
+
+            BrokerApiPort.CancelResult result = brokerApiPort.cancelOrder(user, pending.getOrderId());
+            if (result.success()) {
+                // 취소 성공
+                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.CANCELLED);
+                log.info("[PendingCheck] Cancelled: {}", pending.getOrderId());
+            } else {
+                // 취소 실패 = 이미 체결됨
+                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.FILLED);
+                log.info("[PendingCheck] Already filled: {}", pending.getOrderId());
+
+                // SELL 체결 시 → 해당 ticker의 BUY FILLED 전부 → CLOSED
+                if (pending.getAction() == StockOrder.OrderType.SELL) {
+                    closeMatchingBuys(pending.getUserId(), pending.getTicker());
+                }
+            }
+        }
+    }
+
     // --- 내부 헬퍼 ---
+
+    private void closeMatchingBuys(Long userId, String ticker) {
+        List<TradeLog> filledBuys = tradeLogPort.findFilledBuys(userId, ticker);
+        for (TradeLog buy : filledBuys) {
+            tradeLogPort.updateStatus(buy.getId(), TradeLog.OrderStatus.CLOSED);
+        }
+        if (!filledBuys.isEmpty()) {
+            log.info("[PendingCheck] Closed {} BUY records for {} {}", filledBuys.size(), userId, ticker);
+        }
+    }
+
+    private void cleanupPendingOrders() {
+        ZonedDateTime threshold = ZonedDateTime.now(ZoneId.of("Asia/Seoul")).minusMinutes(STALE_PENDING_MINUTES);
+        List<TradeLog> stalePendings = tradeLogPort.findPendingBefore(threshold);
+
+        for (TradeLog pending : stalePendings) {
+            User user = userPort.findById(pending.getUserId()).orElse(null);
+            if (user == null) {
+                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.FAILED);
+                continue;
+            }
+            if (pending.getOrderId() == null) {
+                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.FAILED);
+                continue;
+            }
+
+            BrokerApiPort.CancelResult result = brokerApiPort.cancelOrder(user, pending.getOrderId());
+            if (result.success()) {
+                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.CANCELLED);
+                log.info("[Init] Stale PENDING cancelled: {}", pending.getOrderId());
+            } else {
+                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.FILLED);
+                log.info("[Init] Stale PENDING already filled: {}", pending.getOrderId());
+
+                if (pending.getAction() == StockOrder.OrderType.SELL) {
+                    closeMatchingBuys(pending.getUserId(), pending.getTicker());
+                }
+            }
+        }
+    }
 
     private List<TradingTarget> filterByTradingHours(List<TradingTarget> items, Map<Long, User> userMap) {
         LocalTime now = ZonedDateTime.now(ZoneId.of("Asia/Seoul")).toLocalTime();
@@ -209,9 +276,6 @@ public class TradingService implements TradingUseCase {
     }
 
     private Map<String, CandleData> fetchAllCandles(List<TradingTarget> items, Map<Long, User> userMap) {
-        // 캔들 데이터가 필요한 유니크 티커 수집:
-        // - predictionTicker: AI 예측용 (1min + 5min)
-        // - 실제 ticker: 트레일링스톱용 (1min만, predictionTicker와 다를 때)
         Map<String, User> tickerToUser = new LinkedHashMap<>();
         Set<String> predictionTickers = new HashSet<>();
         for (TradingTarget item : items) {
@@ -220,7 +284,6 @@ public class TradingService implements TradingUseCase {
                 String predTicker = item.getPredictionTicker();
                 tickerToUser.putIfAbsent(predTicker, user);
                 predictionTickers.add(predTicker);
-                // 실제 ticker도 fetch (트레일링스톱용, predictionTicker와 다를 때)
                 tickerToUser.putIfAbsent(item.getTicker(), user);
             }
         }
@@ -401,28 +464,6 @@ public class TradingService implements TradingUseCase {
                 log.info("[TrailingStop] {} sold (P&L: {}%), auto-trading maintained",
                         item.getTicker(), currentProfitRate);
             }
-        }
-    }
-
-    /**
-     * 미체결 주문 취소
-     */
-    @Override
-    @Transactional
-    public void cancelOpenOrders() {
-        LocalDateTime threshold = LocalDateTime.now().minusMinutes(CANCEL_TIMEOUT_MINUTES);
-        List<PendingOrder> pendingOrders = pendingOrderPort.findOrdersOlderThan(threshold);
-
-        for (PendingOrder pending : pendingOrders) {
-            User user = userPort.findById(pending.getUserId()).orElse(null);
-            if (user == null) continue;
-
-            log.info("[OpenOrderCancel] orderType: {} ticker: {}", pending.getOrderType(), pending.getTicker());
-            BrokerApiPort.CancelResult result = brokerApiPort.cancelOrder(user, pending.getOrderId());
-            if (!result.success()) {
-                log.info("[OpenOrderCancel] Already filled {}: {}", pending.getOrderId(), result.message());
-            }
-            pendingOrderPort.delete(pending.getId());
         }
     }
 

@@ -4,7 +4,6 @@ import com.example.stocktrading.user.domain.User;
 import com.example.stocktrading.trading.domain.Asset;
 import com.example.stocktrading.trading.domain.StockCandle;
 import com.example.stocktrading.trading.domain.StockOrder;
-import com.example.stocktrading.trading.domain.TradeLog.OrderStatus;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -22,9 +21,9 @@ public interface BrokerApiPort {
 
     CancelResult cancelOrder(User user, String orderId);
 
-    record OrderResult(boolean success, OrderStatus status, String message, String orderId) {
-        public OrderResult(boolean success, OrderStatus status, String message) {
-            this(success, status, message, null);
+    record OrderResult(boolean success, String message, String orderId) {
+        public OrderResult(boolean success, String message) {
+            this(success, message, null);
         }
     }
 

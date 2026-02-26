@@ -49,7 +49,6 @@ export interface Stock {
   trailingStopEnabled: boolean;
   trailingWindowMinutes: number;
   brokerId: number | null;
-  holdingQuantity: number;
   // AI status (fetched separately)
   trainingStatus?: 'PENDING' | 'TRAINING' | 'COMPLETED' | 'FAILED';
 }
@@ -86,7 +85,8 @@ export interface TradingLog {
   action: 'BUY' | 'SELL' | 'HOLD';
   price: number;
   timestamp: string;
-  status?: 'SUCCESS' | 'INSUFFICIENT_BALANCE' | 'INSUFFICIENT_STOCK' | 'FAILED';
+  orderId?: string;
+  status?: 'PENDING' | 'FILLED' | 'CLOSED' | 'CANCELLED' | 'FAILED';
 }
 
 // Alias for backwards compatibility

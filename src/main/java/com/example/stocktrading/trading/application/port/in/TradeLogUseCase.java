@@ -10,4 +10,6 @@ public interface TradeLogUseCase {
     List<TradeLog> getRecentTradeLogs(Long userId);
 
     BigDecimal calculateProfitStats(Long userId);
+
+    int getHoldingCount(Long userId, String ticker);
 }

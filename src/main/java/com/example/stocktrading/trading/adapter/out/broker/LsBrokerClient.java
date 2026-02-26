@@ -21,7 +21,7 @@ public class LsBrokerClient implements BrokerClient {
     @Override
     public BrokerApiPort.OrderResult sendOrder(BrokerContext ctx, StockOrder stockOrder) {
         log.info("[LS] Stub: sendOrder - {}", stockOrder);
-        return new BrokerApiPort.OrderResult(false, TradeLog.OrderStatus.FAILED, "");
+        return new BrokerApiPort.OrderResult(false, "LS not implemented");
     }
 
     @Override

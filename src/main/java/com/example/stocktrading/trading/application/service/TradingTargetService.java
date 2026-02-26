@@ -62,7 +62,6 @@ public class TradingTargetService implements TradingTargetUseCase {
                 .trailingStopEnabled(settings.isTrailingStopEnabled())
                 .trailingWindowMinutes(settings.getTrailingWindowMinutes())
                 .brokerId(settings.getBrokerId())
-                .holdingQuantity(settings.getHoldingQuantity())
                 .build();
 
         return tradingTargetPort.save(toUpdate);

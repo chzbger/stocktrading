@@ -6,9 +6,6 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
-
-import java.time.ZoneId;
 import java.time.ZonedDateTime;
 
 @Entity
@@ -42,10 +39,13 @@ public class TradeLogEntity {
     @Column(nullable = false)
     private ZonedDateTime timestamp;
 
+    @Column(length = 100)
+    private String orderId;
+
     @Enumerated(EnumType.STRING)
-    @Column(columnDefinition = "VARCHAR(30) DEFAULT 'SUCCESS'")
+    @Column(columnDefinition = "VARCHAR(30) DEFAULT 'PENDING'")
     @Builder.Default
-    private TradeLog.OrderStatus status = TradeLog.OrderStatus.SUCCESS;
+    private TradeLog.OrderStatus status = TradeLog.OrderStatus.PENDING;
 
     @PrePersist
     protected void onCreate() {

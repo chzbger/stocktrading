@@ -62,10 +62,6 @@ public class TradingTargetEntity {
     @Column(name = "broker_id")
     private Long brokerId;
 
-    @Column(name = "holding_quantity", columnDefinition = "INT DEFAULT 0")
-    @Builder.Default
-    private Integer holdingQuantity = 0;
-
     private ZonedDateTime createdAt;
 
     @PrePersist

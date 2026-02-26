@@ -20,35 +20,39 @@ public class TradeLog {
     private BigDecimal price;
     private Integer profitRate;
     private ZonedDateTime timestamp;
+    private String orderId;
     @Builder.Default
-    private OrderStatus status = OrderStatus.SUCCESS;
+    private OrderStatus status = OrderStatus.PENDING;
 
     public enum OrderStatus {
-        SUCCESS,
-        INSUFFICIENT_BALANCE, // 보유금액 부족
-        INSUFFICIENT_STOCK,   // 보유수량 부족
+        PENDING,
+        FILLED,
+        CLOSED,
+        CANCELLED,
         FAILED
     }
 
-    public static TradeLog create(Long userId, String ticker, StockOrder.OrderType action, BigDecimal price) {
+    public static TradeLog createPending(Long userId, String ticker, StockOrder.OrderType action,
+                                         BigDecimal price, String orderId) {
         return TradeLog.builder()
                 .userId(userId)
                 .ticker(ticker)
                 .action(action)
                 .price(price)
-                .status(OrderStatus.SUCCESS)
+                .orderId(orderId)
+                .status(OrderStatus.PENDING)
                 .timestamp(ZonedDateTime.now(ZoneId.of("Asia/Seoul")))
                 .build();
     }
 
-    public static TradeLog createWithStatus(Long userId, String ticker, StockOrder.OrderType action,
-                                            BigDecimal price, OrderStatus status) {
+    public static TradeLog createFailed(Long userId, String ticker, StockOrder.OrderType action,
+                                        BigDecimal price) {
         return TradeLog.builder()
                 .userId(userId)
                 .ticker(ticker)
                 .action(action)
                 .price(price)
-                .status(status)
+                .status(OrderStatus.FAILED)
                 .timestamp(ZonedDateTime.now(ZoneId.of("Asia/Seoul")))
                 .build();
     }

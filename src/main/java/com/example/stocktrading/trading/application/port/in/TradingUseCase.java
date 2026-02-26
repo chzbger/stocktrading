@@ -6,7 +6,5 @@ public interface TradingUseCase {
 
     void executeTradingCycle();
 
-    void syncHoldingQuantities();
-
-    void cancelOpenOrders();
+    void handlePendingOrders();
 }

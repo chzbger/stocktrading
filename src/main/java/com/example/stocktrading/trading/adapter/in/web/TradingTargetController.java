@@ -61,7 +61,6 @@ public class TradingTargetController {
                 .trailingStopEnabled(request.trailingStopEnabled())
                 .trailingWindowMinutes(request.trailingWindowMinutes())
                 .brokerId(request.brokerId())
-                .holdingQuantity(request.holdingQuantity())
                 .build();
 
         TradingTarget item = tradingTargetUseCase.updateSettings(id, settings);
@@ -93,7 +92,6 @@ public class TradingTargetController {
                 .trailingStopEnabled(item.isTrailingStopEnabled())
                 .trailingWindowMinutes(item.getTrailingWindowMinutes())
                 .brokerId(item.getBrokerId())
-                .holdingQuantity(item.getHoldingQuantity())
                 .build();
     }
 
@@ -109,8 +107,7 @@ public class TradingTargetController {
             String trailingStopPercentage,
             boolean trailingStopEnabled,
             int trailingWindowMinutes,
-            Long brokerId,
-            int holdingQuantity
+            Long brokerId
     ) {
     }
 
@@ -132,6 +129,5 @@ public class TradingTargetController {
         private boolean trailingStopEnabled;
         private Integer trailingWindowMinutes;
         private Long brokerId;
-        private Integer holdingQuantity;
     }
 }

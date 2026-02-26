@@ -109,21 +109,17 @@ public class KisBrokerClient implements BrokerClient {
                 if ("0".equals(rtCd)) {
                     String odno = root.path("output").path("ODNO").asText(null);
                     log.info("[KIS] StockOrder success, orderId={}", odno);
-                    return new BrokerApiPort.OrderResult(true, TradeLog.OrderStatus.SUCCESS, null, odno);
+                    return new BrokerApiPort.OrderResult(true, null, odno);
                 }
 
                 log.error("[KIS] StockOrder failed: rt_cd={}, msg_cd={}, msg={}", rtCd, msgCd, msg1);
-                if (msgCd.contains("4033") || msg1.contains("잔고")) {
-                    return new BrokerApiPort.OrderResult(false, TradeLog.OrderStatus.INSUFFICIENT_BALANCE, msg1);
-                } else if (msgCd.contains("4035") || msg1.contains("보유")) {
-                    return new BrokerApiPort.OrderResult(false, TradeLog.OrderStatus.INSUFFICIENT_STOCK, msg1);
-                }
+                return new BrokerApiPort.OrderResult(false, msg1);
             }
 
         } catch (Exception e) {
             log.error("[KIS] StockOrder failed", e);
         }
-        return new BrokerApiPort.OrderResult(false, TradeLog.OrderStatus.FAILED, "StockOrder failed");
+        return new BrokerApiPort.OrderResult(false, "StockOrder failed");
     }
 
     @Override

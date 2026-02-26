@@ -71,7 +71,6 @@ public class TradingTargetPersistenceAdapter implements TradingTargetPort {
                 .trailingStopEnabled(entity.getTrailingStopEnabled() == null || entity.getTrailingStopEnabled())
                 .trailingWindowMinutes(entity.getTrailingWindowMinutes() != null ? entity.getTrailingWindowMinutes() : 10)
                 .brokerId(entity.getBrokerId())
-                .holdingQuantity(entity.getHoldingQuantity() != null ? entity.getHoldingQuantity() : 0)
                 .build();
     }
 
@@ -95,7 +94,6 @@ public class TradingTargetPersistenceAdapter implements TradingTargetPort {
         entity.setTrailingStopEnabled(item.isTrailingStopEnabled());
         entity.setTrailingWindowMinutes(item.getTrailingWindowMinutes());
         entity.setBrokerId(item.getBrokerId());
-        entity.setHoldingQuantity(item.getHoldingQuantity());
         return entity;
     }
 

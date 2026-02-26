@@ -32,8 +32,6 @@ public class TradingTarget {
     @Builder.Default
     private int trailingWindowMinutes = 10;
     private Long brokerId;
-    @Builder.Default
-    private int holdingQuantity = 0;
 
     public static TradingTarget ofCreate(Long userId, String ticker, Long brokerId) {
         return TradingTarget.builder()

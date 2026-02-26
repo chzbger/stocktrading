@@ -358,7 +358,6 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                 trailingStopEnabled: thresholds.trailingStopEnabled,
                 trailingWindowMinutes: thresholds.trailingWindowMinutes,
                 brokerId: editingStock.brokerId,
-                holdingQuantity: editingStock.holdingQuantity,
             }, {
                 headers: getAuthHeaders(),
             })
@@ -639,7 +638,7 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                                 <TableRow key={stock.id}>
                                     <TableCell>{stock.ticker}</TableCell>
                                     <TableCell align="right">{formatUSD(currentPrice)}</TableCell>
-                                    <TableCell align="right">{stock.holdingQuantity}</TableCell>
+                                    <TableCell align="right">{owned?.quantity ?? 0}</TableCell>
                                     <TableCell align="right">
                                         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 0.5 }}>
                                             {profitRate >= 0 ? (
@@ -811,13 +810,20 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                                     <TableCell>
                                         <Chip
                                             label={
-                                                log.status === 'SUCCESS' ? '성공' :
-                                                log.status === 'INSUFFICIENT_BALANCE' ? '잔고부족' :
-                                                log.status === 'INSUFFICIENT_STOCK' ? '보유부족' :
-                                                log.status === 'FAILED' ? '실패' : '성공'
+                                                log.status === 'PENDING' ? '대기' :
+                                                log.status === 'FILLED' ? '체결' :
+                                                log.status === 'CLOSED' ? '정산' :
+                                                log.status === 'CANCELLED' ? '취소' :
+                                                log.status === 'FAILED' ? '실패' : '대기'
                                             }
                                             size="small"
-                                            color={log.status === 'SUCCESS' || !log.status ? 'success' : 'warning'}
+                                            color={
+                                                log.status === 'PENDING' ? 'info' :
+                                                log.status === 'FILLED' ? 'success' :
+                                                log.status === 'CLOSED' ? 'success' :
+                                                log.status === 'CANCELLED' ? 'default' :
+                                                log.status === 'FAILED' ? 'warning' : 'info'
+                                            }
                                             variant="outlined"
                                         />
                                     </TableCell>

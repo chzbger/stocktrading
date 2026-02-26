@@ -1,13 +1,13 @@
 package com.example.stocktrading.trading.adapter.out.persistence;
 
 import com.example.stocktrading.trading.application.port.out.TradeLogPort;
+import com.example.stocktrading.trading.domain.StockOrder;
 import com.example.stocktrading.trading.domain.TradeLog;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.List;
 
@@ -40,6 +40,46 @@ public class TradeLogPersistenceAdapter implements TradeLogPort {
                 .toList();
     }
 
+    @Override
+    @Transactional
+    public TradeLog updateStatus(Long tradeLogId, TradeLog.OrderStatus newStatus) {
+        TradeLogEntity entity = tradeLogRepository.findById(tradeLogId).orElseThrow(
+                () -> new IllegalArgumentException("TradeLog not found: " + tradeLogId));
+        entity.setStatus(newStatus);
+        return mapToDomain(tradeLogRepository.save(entity));
+    }
+
+    @Override
+    public List<TradeLog> findPendingBefore(ZonedDateTime threshold) {
+        return tradeLogRepository.findByStatusAndTimestampBefore(TradeLog.OrderStatus.PENDING, threshold).stream()
+                .map(this::mapToDomain)
+                .toList();
+    }
+
+    @Override
+    public List<TradeLog> findFilledBuys(Long userId, String ticker) {
+        return tradeLogRepository.findByUserIdAndTickerAndActionAndStatus(
+                userId, ticker, StockOrder.OrderType.BUY, TradeLog.OrderStatus.FILLED).stream()
+                .map(this::mapToDomain)
+                .toList();
+    }
+
+    @Override
+    public boolean hasPendingSell(Long userId, String ticker) {
+        return tradeLogRepository.existsByUserIdAndTickerAndActionAndStatus(
+                userId, ticker, StockOrder.OrderType.SELL, TradeLog.OrderStatus.PENDING);
+    }
+
+    @Override
+    public int getHoldingCount(Long userId, String ticker) {
+        return tradeLogRepository.countFilledBuys(userId, ticker);
+    }
+
+    @Override
+    public ZonedDateTime getPositionOpenedAt(Long userId, String ticker) {
+        return tradeLogRepository.findEarliestFilledBuyTimestamp(userId, ticker);
+    }
+
     public TradeLog mapToDomain(TradeLogEntity entity) {
         if (entity == null) return null;
         return TradeLog.builder()
@@ -50,7 +90,8 @@ public class TradeLogPersistenceAdapter implements TradeLogPort {
                 .price(entity.getPrice())
                 .profitRate(entity.getProfitRate())
                 .timestamp(entity.getTimestamp())
-                .status(entity.getStatus() != null ? entity.getStatus() : TradeLog.OrderStatus.SUCCESS)
+                .orderId(entity.getOrderId())
+                .status(entity.getStatus() != null ? entity.getStatus() : TradeLog.OrderStatus.PENDING)
                 .build();
     }
 
@@ -64,7 +105,8 @@ public class TradeLogPersistenceAdapter implements TradeLogPort {
                 .price(tradeLog.getPrice())
                 .profitRate(tradeLog.getProfitRate())
                 .timestamp(tradeLog.getTimestamp())
-                .status(tradeLog.getStatus() != null ? tradeLog.getStatus() : TradeLog.OrderStatus.SUCCESS)
+                .orderId(tradeLog.getOrderId())
+                .status(tradeLog.getStatus() != null ? tradeLog.getStatus() : TradeLog.OrderStatus.PENDING)
                 .build();
     }
 }

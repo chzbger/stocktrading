@@ -28,14 +28,12 @@ public class TradeLogService implements TradeLogUseCase {
     public BigDecimal calculateProfitStats(Long userId) {
         List<TradeLog> logsAsc = tradeLogPort.findByUserIdOrderByTimestampAsc(userId);
 
-        List<TradeLog> successLogsAsc = logsAsc.stream()
-                .filter(log -> log.getStatus() == TradeLog.OrderStatus.SUCCESS)
-                .toList();
-
-        Map<String, List<TradeLog>> logsByTicker = successLogsAsc.stream()
+        Map<String, List<TradeLog>> logsByTicker = logsAsc.stream()
+                .filter(log -> log.getStatus() == TradeLog.OrderStatus.CLOSED
+                        || (log.getAction() == StockOrder.OrderType.SELL
+                            && log.getStatus() == TradeLog.OrderStatus.FILLED))
                 .collect(Collectors.groupingBy(TradeLog::getTicker));
 
-        // 티커별 계산
         BigDecimal totalProfit = BigDecimal.ZERO;
         for (List<TradeLog> tickerLogsAsc : logsByTicker.values()) {
             totalProfit = totalProfit.add(calculateTickerProfit(tickerLogsAsc));
@@ -44,20 +42,25 @@ public class TradeLogService implements TradeLogUseCase {
         return totalProfit;
     }
 
+    @Override
+    public int getHoldingCount(Long userId, String ticker) {
+        return tradeLogPort.getHoldingCount(userId, ticker);
+    }
+
     private BigDecimal calculateTickerProfit(List<TradeLog> tickerLogsAsc) {
         BigDecimal profit = BigDecimal.ZERO;
-        BigDecimal buyPrice = BigDecimal.ZERO;
+        List<BigDecimal> buyPrices = new ArrayList<>();
 
-        // 매수는 1개씩 한다고 가정
-        // 매도는 일괄
-        // 현재 보유수량(매도 안한것)은 수익으로 계산 안함
+        // CLOSED BUYs + FILLED SELLs만 사용
         for (TradeLog log : tickerLogsAsc) {
-            if (log.getAction() == StockOrder.OrderType.BUY) {
-                buyPrice = buyPrice.add(log.getPrice());
-            } else if (log.getAction() == StockOrder.OrderType.SELL) {
-                BigDecimal sellPrice = log.getPrice();
-                profit = profit.add(sellPrice.subtract(buyPrice));
-                buyPrice = BigDecimal.ZERO;
+            if (log.getAction() == StockOrder.OrderType.BUY && log.getStatus() == TradeLog.OrderStatus.CLOSED) {
+                buyPrices.add(log.getPrice());
+            } else if (log.getAction() == StockOrder.OrderType.SELL && log.getStatus() == TradeLog.OrderStatus.FILLED) {
+                if (!buyPrices.isEmpty()) {
+                    BigDecimal totalBuyPrice = buyPrices.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+                    profit = profit.add(log.getPrice().multiply(BigDecimal.valueOf(buyPrices.size())).subtract(totalBuyPrice));
+                    buyPrices.clear();
+                }
             }
         }
 

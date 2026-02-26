@@ -68,7 +68,7 @@ public class RoutingBrokerAdapter implements BrokerApiPort {
     public OrderResult sendOrder(User user, StockOrder stockOrder) {
         return resolveContext(user)
                 .map(ctx -> getClient(ctx).sendOrder(ctx, stockOrder))
-                .orElse(new OrderResult(false, TradeLog.OrderStatus.FAILED, "sendOrder orElse"));
+                .orElse(new OrderResult(false, "No broker context"));
     }
 
     @Override

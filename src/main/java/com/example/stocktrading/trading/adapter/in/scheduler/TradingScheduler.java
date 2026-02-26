@@ -22,6 +22,9 @@ public class TradingScheduler implements ApplicationRunner {
         log.info("[Scheduler] Initializing trading service done");
     }
 
+    /**
+     * AI 예측 자동 매매
+     */
     @Scheduled(fixedDelay = 60000)
     public void executeTradingCycle() {
         try {
@@ -31,21 +34,15 @@ public class TradingScheduler implements ApplicationRunner {
         }
     }
 
+    /**
+     * 미체결 주문을 체결or실패 처리
+     */
     @Scheduled(fixedDelay = 120000)
-    public void executeCancelOpenOrderCycle() {
+    public void handlePendingOrders() {
         try {
-            tradingUseCase.cancelOpenOrders();
+            tradingUseCase.handlePendingOrders();
         } catch (Exception e) {
-            log.error("[Scheduler] Cancel open orders failed", e);
-        }
-    }
-
-    @Scheduled(fixedDelay = 300000)
-    public void syncHoldingQuantities() {
-        try {
-            tradingUseCase.syncHoldingQuantities();
-        } catch (Exception e) {
-            log.error("[Scheduler] Sync holding quantities failed", e);
+            log.error("[Scheduler] Confirm/cancel pending orders failed", e);
         }
     }
 }
