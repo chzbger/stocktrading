@@ -43,8 +43,8 @@ public class AiModelService implements AiModelUseCase {
                 .build();
         TrainingHistory saved = aiTrainingHistoryPort.save(pending);
 
-        // 2. 진행중 레코드 조회 → 내 id 외에 있으면 삭제 후 중단
-        List<TrainingHistory> ingHistoryList = aiTrainingHistoryPort.findIngHistoryByUserId(userId);
+        // 2. 같은 티커의 진행중 레코드 조회 → 내 id 외에 있으면 중복 학습 방지
+        List<TrainingHistory> ingHistoryList = aiTrainingHistoryPort.findIngHistoryByUserIdAndTicker(userId, ticker);
         boolean hasOther = ingHistoryList.stream()
                 .anyMatch(h -> !h.getId().equals(saved.getId()));
         if (hasOther) {
