@@ -100,7 +100,7 @@ public class AiModelAdapter implements AiModelPort {
     }
 
     @Override
-    public String trainModel(String ticker, Long userId) {
+    public String trainModel(String ticker, Long userId, TrainingParams params) {
         log.info("[AI] Starting training via API for ticker: {} user: {}", ticker, userId);
 
         try {
@@ -109,9 +109,14 @@ public class AiModelAdapter implements AiModelPort {
                 request.put("user_id", userId);
             }
             request.put("enable_tuning", true);
-            request.put("tuning_trials", 30);
+            request.put("tuning_trials", params.tuningTrials());
             request.put("multitimeframe", true);
             request.put("ensemble", true);
+            request.put("profit_atr", params.profitAtr());
+            request.put("stop_atr", params.stopAtr());
+            request.put("max_holding", params.maxHolding());
+            request.put("min_threshold", params.minThreshold());
+            request.put("period_years", params.trainingPeriodYears());
 
             @SuppressWarnings("unchecked")
             Map<String, Object> response = restClient.post()
@@ -181,6 +186,34 @@ public class AiModelAdapter implements AiModelPort {
         } catch (Exception e) {
             log.error("[AI] Failed training log " + ticker, e);
             return "Failed to retrieve log: " + e.getMessage();
+        }
+    }
+
+    @Override
+    public RecommendedThresholds getRecommendedThresholds(String ticker, Long userId) {
+        try {
+            String uri = "/models/" + ticker + "/recommended-thresholds?strategy=scalping";
+            if (userId != null) {
+                uri += "&user_id=" + userId;
+            }
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> response = restClient.get()
+                    .uri(uri)
+                    .retrieve()
+                    .body(Map.class);
+
+            if (response == null) {
+                throw new RuntimeException("Recommended thresholds API returned null");
+            }
+
+            int buyTh = ((Number) response.get("recommended_buy_threshold_int")).intValue();
+            int sellTh = ((Number) response.get("recommended_sell_threshold_int")).intValue();
+            log.info("[AI] Recommended thresholds for {}: buy={}, sell={}", ticker, buyTh, sellTh);
+            return new RecommendedThresholds(buyTh, sellTh);
+        } catch (Exception e) {
+            log.error("[AI] Failed to get recommended thresholds for {}: {}", ticker, e.getMessage());
+            throw new RuntimeException("Failed to get recommended thresholds", e);
         }
     }
 

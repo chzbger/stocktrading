@@ -61,6 +61,12 @@ public class TradingTargetController {
                 .trailingStopEnabled(request.trailingStopEnabled())
                 .trailingWindowMinutes(request.trailingWindowMinutes())
                 .brokerId(request.brokerId())
+                .profitAtr(request.profitAtr())
+                .stopAtr(request.stopAtr())
+                .maxHolding(request.maxHolding())
+                .minThreshold(request.minThreshold())
+                .trainingPeriodYears(request.trainingPeriodYears())
+                .tuningTrials(request.tuningTrials())
                 .build();
 
         TradingTarget item = tradingTargetUseCase.updateSettings(id, settings);
@@ -92,6 +98,12 @@ public class TradingTargetController {
                 .trailingStopEnabled(item.isTrailingStopEnabled())
                 .trailingWindowMinutes(item.getTrailingWindowMinutes())
                 .brokerId(item.getBrokerId())
+                .profitAtr(item.getProfitAtr())
+                .stopAtr(item.getStopAtr())
+                .maxHolding(item.getMaxHolding())
+                .minThreshold(item.getMinThreshold())
+                .trainingPeriodYears(item.getTrainingPeriodYears())
+                .tuningTrials(item.getTuningTrials())
                 .build();
     }
 
@@ -107,7 +119,13 @@ public class TradingTargetController {
             String trailingStopPercentage,
             boolean trailingStopEnabled,
             int trailingWindowMinutes,
-            Long brokerId
+            Long brokerId,
+            double profitAtr,
+            double stopAtr,
+            int maxHolding,
+            double minThreshold,
+            int trainingPeriodYears,
+            int tuningTrials
     ) {
     }
 
@@ -129,5 +147,11 @@ public class TradingTargetController {
         private boolean trailingStopEnabled;
         private Integer trailingWindowMinutes;
         private Long brokerId;
+        private Double profitAtr;
+        private Double stopAtr;
+        private Integer maxHolding;
+        private Double minThreshold;
+        private Integer trainingPeriodYears;
+        private Integer tuningTrials;
     }
 }

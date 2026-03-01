@@ -71,6 +71,12 @@ public class TradingTargetPersistenceAdapter implements TradingTargetPort {
                 .trailingStopEnabled(entity.getTrailingStopEnabled() == null || entity.getTrailingStopEnabled())
                 .trailingWindowMinutes(entity.getTrailingWindowMinutes() != null ? entity.getTrailingWindowMinutes() : 10)
                 .brokerId(entity.getBrokerId())
+                .profitAtr(entity.getProfitAtr() != null ? entity.getProfitAtr() : 0.6)
+                .stopAtr(entity.getStopAtr() != null ? entity.getStopAtr() : 0.4)
+                .maxHolding(entity.getMaxHolding() != null ? entity.getMaxHolding() : 5)
+                .minThreshold(entity.getMinThreshold() != null ? entity.getMinThreshold() : 0.2)
+                .trainingPeriodYears(entity.getTrainingPeriodYears() != null ? entity.getTrainingPeriodYears() : 4)
+                .tuningTrials(entity.getTuningTrials() != null ? entity.getTuningTrials() : 30)
                 .build();
     }
 
@@ -94,6 +100,12 @@ public class TradingTargetPersistenceAdapter implements TradingTargetPort {
         entity.setTrailingStopEnabled(item.isTrailingStopEnabled());
         entity.setTrailingWindowMinutes(item.getTrailingWindowMinutes());
         entity.setBrokerId(item.getBrokerId());
+        entity.setProfitAtr(item.getProfitAtr());
+        entity.setStopAtr(item.getStopAtr());
+        entity.setMaxHolding(item.getMaxHolding());
+        entity.setMinThreshold(item.getMinThreshold());
+        entity.setTrainingPeriodYears(item.getTrainingPeriodYears());
+        entity.setTuningTrials(item.getTuningTrials());
         return entity;
     }
 

@@ -55,7 +55,11 @@ public class AiModelService implements AiModelUseCase {
         // 3. Python 학습 요청 → TRAINING 상태 변경
         log.info("[AiModelService] Training for: {} (User: {})", ticker, userId);
         try {
-            aiModelPort.trainModel(ticker, userId);
+            AiModelPort.TrainingParams params = new AiModelPort.TrainingParams(
+                    item.getProfitAtr(), item.getStopAtr(), item.getMaxHolding(),
+                    item.getMinThreshold(), item.getTrainingPeriodYears(), item.getTuningTrials()
+            );
+            aiModelPort.trainModel(ticker, userId, params);
             aiTrainingHistoryPort.save(saved.withStatus(TrainingStatus.TRAINING));
             log.info("[AiModelService] Training started for {}", ticker);
         } catch (Exception e) {
@@ -78,8 +82,34 @@ public class AiModelService implements AiModelUseCase {
             aiTrainingHistoryPort.save(history.withStatus(TrainingStatus.COMPLETED));
             log.info("[AiModelService] Training completed for {}", ticker);
 
-            String text = String.format("[Trading] %s 모델 학습이 완료되었습니다.", ticker);
-            notificationPort.sendMessage(userId, text);
+            // Auto-update thresholds from recommended values
+            try {
+                AiModelPort.RecommendedThresholds recommended =
+                        aiModelPort.getRecommendedThresholds(ticker, userId);
+
+                TradingTarget target = tradingTargetPort.findByUserIdAndTicker(userId, ticker);
+                if (target != null) {
+                    int oldBuy = target.getBuyThreshold();
+                    int oldSell = target.getSellThreshold();
+                    TradingTarget updated = target.toBuilder()
+                            .buyThreshold(recommended.buyThreshold())
+                            .sellThreshold(recommended.sellThreshold())
+                            .build();
+                    tradingTargetPort.save(updated);
+
+                    log.info("[AiModelService] Auto-updated thresholds for {}: buy {}→{}, sell {}→{}",
+                            ticker, oldBuy, recommended.buyThreshold(), oldSell, recommended.sellThreshold());
+
+                    String text = String.format(
+                            "[Trading] %s 학습 완료. Threshold 자동 업데이트: BUY %d→%d, SELL %d→%d",
+                            ticker, oldBuy, recommended.buyThreshold(), oldSell, recommended.sellThreshold());
+                    notificationPort.sendMessage(userId, text);
+                }
+            } catch (Exception e) {
+                log.warn("[AiModelService] Failed to auto-update thresholds for {}: {}", ticker, e.getMessage());
+                String text = String.format("[Trading] %s 모델 학습이 완료되었습니다. (Threshold 자동 업데이트 실패)", ticker);
+                notificationPort.sendMessage(userId, text);
+            }
         } else if (pythonStatus.isFailed() || pythonStatus.isError()) {
             String errorMsg = pythonStatus.errorMessage() != null ? pythonStatus.errorMessage() : "Training failed or lost";
             aiTrainingHistoryPort.save(history.withStatus(TrainingStatus.FAILED, errorMsg));

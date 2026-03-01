@@ -62,6 +62,30 @@ public class TradingTargetEntity {
     @Column(name = "broker_id")
     private Long brokerId;
 
+    @Column(name = "profit_atr", columnDefinition = "DOUBLE DEFAULT 0.6")
+    @Builder.Default
+    private Double profitAtr = 0.6;
+
+    @Column(name = "stop_atr", columnDefinition = "DOUBLE DEFAULT 0.4")
+    @Builder.Default
+    private Double stopAtr = 0.4;
+
+    @Column(name = "max_holding", columnDefinition = "INT DEFAULT 5")
+    @Builder.Default
+    private Integer maxHolding = 5;
+
+    @Column(name = "min_threshold", columnDefinition = "DOUBLE DEFAULT 0.2")
+    @Builder.Default
+    private Double minThreshold = 0.2;
+
+    @Column(name = "training_period_years", columnDefinition = "INT DEFAULT 4")
+    @Builder.Default
+    private Integer trainingPeriodYears = 4;
+
+    @Column(name = "tuning_trials", columnDefinition = "INT DEFAULT 30")
+    @Builder.Default
+    private Integer tuningTrials = 30;
+
     private ZonedDateTime createdAt;
 
     @PrePersist

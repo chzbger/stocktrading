@@ -32,6 +32,18 @@ public class TradingTarget {
     @Builder.Default
     private int trailingWindowMinutes = 10;
     private Long brokerId;
+    @Builder.Default
+    private double profitAtr = 0.6;
+    @Builder.Default
+    private double stopAtr = 0.4;
+    @Builder.Default
+    private int maxHolding = 5;
+    @Builder.Default
+    private double minThreshold = 0.2;
+    @Builder.Default
+    private int trainingPeriodYears = 4;
+    @Builder.Default
+    private int tuningTrials = 30;
 
     public static TradingTarget ofCreate(Long userId, String ticker, Long brokerId) {
         return TradingTarget.builder()

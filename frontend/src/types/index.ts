@@ -49,6 +49,12 @@ export interface Stock {
   trailingStopEnabled: boolean;
   trailingWindowMinutes: number;
   brokerId: number | null;
+  profitAtr: number;
+  stopAtr: number;
+  maxHolding: number;
+  minThreshold: number;
+  trainingPeriodYears: number;
+  tuningTrials: number;
   // AI status (fetched separately)
   trainingStatus?: 'PENDING' | 'TRAINING' | 'COMPLETED' | 'FAILED';
 }

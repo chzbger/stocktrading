@@ -62,6 +62,12 @@ interface Thresholds {
     trailingStop: number;
     trailingStopEnabled: boolean;
     trailingWindowMinutes: number;
+    profitAtr: number;
+    stopAtr: number;
+    maxHolding: number;
+    minThreshold: number;
+    trainingPeriodYears: number;
+    tuningTrials: number;
 }
 
 interface RealizedProfitCardProps {
@@ -110,7 +116,7 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
     // Threshold Modal State
     const [thresholdModalOpen, setThresholdModalOpen] = useState<boolean>(false)
     const [editingStock, setEditingStock] = useState<Stock | null>(null)
-    const [thresholds, setThresholds] = useState<Thresholds>({ buy: 10, sell: 10, stopLoss: 3, baseTicker: '', isInverse: false, trailingStop: 2, trailingStopEnabled: true, trailingWindowMinutes: 10 })
+    const [thresholds, setThresholds] = useState<Thresholds>({ buy: 10, sell: 10, stopLoss: 3, baseTicker: '', isInverse: false, trailingStop: 2, trailingStopEnabled: true, trailingWindowMinutes: 10, profitAtr: 0.6, stopAtr: 0.4, maxHolding: 5, minThreshold: 0.2, trainingPeriodYears: 4, tuningTrials: 30 })
 
     // Create axios instance with interceptor for token expiry
     const apiClient: AxiosInstance = axios.create()
@@ -341,6 +347,12 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
             trailingStop: parseFloat(stock.trailingStopPercentage) || 2,
             trailingStopEnabled: stock.trailingStopEnabled ?? true,
             trailingWindowMinutes: stock.trailingWindowMinutes || 10,
+            profitAtr: stock.profitAtr ?? 0.6,
+            stopAtr: stock.stopAtr ?? 0.4,
+            maxHolding: stock.maxHolding ?? 5,
+            minThreshold: stock.minThreshold ?? 0.2,
+            trainingPeriodYears: stock.trainingPeriodYears ?? 4,
+            tuningTrials: stock.tuningTrials ?? 30,
         })
         setThresholdModalOpen(true)
     }
@@ -358,6 +370,12 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                 trailingStopEnabled: thresholds.trailingStopEnabled,
                 trailingWindowMinutes: thresholds.trailingWindowMinutes,
                 brokerId: editingStock.brokerId,
+                profitAtr: thresholds.profitAtr,
+                stopAtr: thresholds.stopAtr,
+                maxHolding: thresholds.maxHolding,
+                minThreshold: thresholds.minThreshold,
+                trainingPeriodYears: thresholds.trainingPeriodYears,
+                tuningTrials: thresholds.tuningTrials,
             }, {
                 headers: getAuthHeaders(),
             })
@@ -996,6 +1014,83 @@ function DashboardPage({ onLogout }: DashboardPageProps) {
                             }
                         </Alert>
                     )}
+
+                    <Divider sx={{ my: 3 }} />
+
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                        <strong>학습 파라미터</strong><br />
+                        AI 모델 학습 시 사용되는 라벨링/튜닝 파라미터입니다.<br />
+                        <strong>저변동(SPY,QQQ):</strong> profit 0.5, stop 0.3, holding 10, threshold 0.15<br />
+                        <strong>고변동(TSLA,NVDA):</strong> profit 0.8, stop 0.5, holding 5, threshold 0.25
+                    </Typography>
+                    <Grid container spacing={2}>
+                        <Grid item xs={4}>
+                            <TextField
+                                label="Profit ATR"
+                                type="number"
+                                inputProps={{ step: 0.1, min: 0.1, max: 2.0 }}
+                                fullWidth
+                                value={thresholds.profitAtr}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => setThresholds({ ...thresholds, profitAtr: parseFloat(e.target.value) || 0.6 })}
+                                helperText="익절 ATR 배수"
+                            />
+                        </Grid>
+                        <Grid item xs={4}>
+                            <TextField
+                                label="Stop ATR"
+                                type="number"
+                                inputProps={{ step: 0.05, min: 0.1, max: 1.5 }}
+                                fullWidth
+                                value={thresholds.stopAtr}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => setThresholds({ ...thresholds, stopAtr: parseFloat(e.target.value) || 0.4 })}
+                                helperText="손절 ATR 배수"
+                            />
+                        </Grid>
+                        <Grid item xs={4}>
+                            <TextField
+                                label="Max Holding"
+                                type="number"
+                                inputProps={{ step: 1, min: 1, max: 30 }}
+                                fullWidth
+                                value={thresholds.maxHolding}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => setThresholds({ ...thresholds, maxHolding: parseInt(e.target.value) || 5 })}
+                                helperText="최대 보유 (5분봉)"
+                            />
+                        </Grid>
+                        <Grid item xs={4}>
+                            <TextField
+                                label="Min Threshold"
+                                type="number"
+                                inputProps={{ step: 0.05, min: 0.05, max: 1.0 }}
+                                fullWidth
+                                value={thresholds.minThreshold}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => setThresholds({ ...thresholds, minThreshold: parseFloat(e.target.value) || 0.2 })}
+                                helperText="최소 수익 기준 %"
+                            />
+                        </Grid>
+                        <Grid item xs={4}>
+                            <TextField
+                                label="학습 기간 (년)"
+                                type="number"
+                                inputProps={{ step: 1, min: 1, max: 10 }}
+                                fullWidth
+                                value={thresholds.trainingPeriodYears}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => setThresholds({ ...thresholds, trainingPeriodYears: parseInt(e.target.value) || 4 })}
+                                helperText="데이터 수집 기간"
+                            />
+                        </Grid>
+                        <Grid item xs={4}>
+                            <TextField
+                                label="Tuning Trials"
+                                type="number"
+                                inputProps={{ step: 5, min: 10, max: 100 }}
+                                fullWidth
+                                value={thresholds.tuningTrials}
+                                onChange={(e: ChangeEvent<HTMLInputElement>) => setThresholds({ ...thresholds, tuningTrials: parseInt(e.target.value) || 30 })}
+                                helperText="하이퍼파라미터 탐색 수"
+                            />
+                        </Grid>
+                    </Grid>
                 </DialogContent>
                 <DialogActions>
                     <Button onClick={() => setThresholdModalOpen(false)}>취소</Button>

@@ -9,7 +9,15 @@ public interface AiModelPort {
                               List<StockCandle> minuteStockCandles, List<StockCandle> fiveMinStockCandles,
                               int buyThreshold, int sellThreshold);
 
-    String trainModel(String ticker, Long userId);
+    String trainModel(String ticker, Long userId, TrainingParams params);
+
+    record TrainingParams(
+            double profitAtr, double stopAtr, int maxHolding,
+            double minThreshold, int trainingPeriodYears, int tuningTrials
+    ) {}
+
+    record RecommendedThresholds(int buyThreshold, int sellThreshold) {}
+    RecommendedThresholds getRecommendedThresholds(String ticker, Long userId);
 
     record PredictionResult(
             int prediction,      // 0=HOLD, 1=BUY, 2=SELL
