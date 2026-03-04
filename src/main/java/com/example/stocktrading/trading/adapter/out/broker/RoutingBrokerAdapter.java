@@ -1,5 +1,6 @@
 package com.example.stocktrading.trading.adapter.out.broker;
 
+import com.example.stocktrading.common.CacheConfig;
 import com.example.stocktrading.user.domain.BrokerInfo;
 import com.example.stocktrading.user.domain.User;
 import com.example.stocktrading.trading.application.port.out.BrokerApiPort;
@@ -9,6 +10,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
+
+import org.springframework.cache.annotation.Cacheable;
 
 import java.math.BigDecimal;
 import java.util.Collections;
@@ -79,6 +82,7 @@ public class RoutingBrokerAdapter implements BrokerApiPort {
     }
 
     @Override
+    @Cacheable(value = CacheConfig.CANDLE_1MIN, key = "'getAccountAsset-' + #ticker + '-' + limit")
     public List<StockCandle> getRecentCandles(User user, String ticker, int limit) {
         return resolveContext(user)
                 .map(ctx -> getClient(ctx).getRecentCandles(ctx, ticker, limit))
@@ -86,6 +90,7 @@ public class RoutingBrokerAdapter implements BrokerApiPort {
     }
 
     @Override
+    @Cacheable(value = CacheConfig.CANDLE_5MIN, key = "'getRecentCandles5Min-' + #ticker + '-' + limit")
     public List<StockCandle> getRecentCandles5Min(User user, String ticker, int limit) {
         return resolveContext(user)
                 .map(ctx -> getClient(ctx).getRecentCandles5Min(ctx, ticker, limit))

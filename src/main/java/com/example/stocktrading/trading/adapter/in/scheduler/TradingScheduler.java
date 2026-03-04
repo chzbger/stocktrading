@@ -23,26 +23,26 @@ public class TradingScheduler implements ApplicationRunner {
     }
 
     /**
-     * AI 예측 자동 매매
+     * 리스크 관리 (미체결 처리, 타임아웃, 손절, 트레일링스톱)
      */
     @Scheduled(fixedDelay = 60000)
-    public void executeTradingCycle() {
+    public void executeRiskManagement() {
         try {
-            tradingUseCase.executeTradingCycle();
+            tradingUseCase.executeRiskManagement();
         } catch (Exception e) {
-            log.error("[Scheduler] Trading cycle failed", e);
+            log.error("[Scheduler] Risk management failed", e);
         }
     }
 
     /**
-     * 미체결 주문을 체결or실패 처리
+     * AI 매매 (캔들 조회, AI 예측, 주문 실행)
      */
-    @Scheduled(fixedDelay = 120000)
-    public void handlePendingOrders() {
+    @Scheduled(fixedDelay = 60000)
+    public void executeAiTrading() {
         try {
-            tradingUseCase.handlePendingOrders();
+            tradingUseCase.executeAiTrading();
         } catch (Exception e) {
-            log.error("[Scheduler] Confirm/cancel pending orders failed", e);
+            log.error("[Scheduler] AI trading failed", e);
         }
     }
 }

@@ -16,6 +16,8 @@ public class CacheConfig {
 
     public static final String KIS_TOKEN_CACHE = "kisTokenCache";
     public static final String USER_ASSET_CACHE = "userAssetCache";
+    public static final String CANDLE_1MIN = "candle1min";
+    public static final String CANDLE_5MIN = "candle5min";
 
     @Bean
     public CacheManager ehCacheManager() throws Exception {

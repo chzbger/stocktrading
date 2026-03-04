@@ -63,77 +63,63 @@ public class TradingService implements TradingUseCase {
 
     @Override
     @Transactional
-    public void executeTradingCycle() {
+    public void executeRiskManagement() {
         List<TradingTarget> activeItems = new ArrayList<>(tradingTargetPort.findActiveItems());
         if (activeItems.isEmpty()) return;
 
-        // 유저맵 빌드 + 거래시간 필터
-        Map<Long, User> userMap = activeItems.stream()
-                .map(item -> userPort.findById(item.getUserId()).orElse(null))
-                .filter(Objects::nonNull)
-                .collect(Collectors.toMap(User::getUserId, Function.identity(), (a, b) -> a));
+        Map<Long, User> userMap = buildUserMap(activeItems);
         activeItems = filterByTradingHours(activeItems, userMap);
         if (activeItems.isEmpty()) return;
 
-        log.info("[Cycle] ========== Trading Cycle Start (Active: {}) ==========", activeItems.size());
+        log.info("[Risk] ========== Risk Management Start (Active: {}) ==========", activeItems.size());
 
-        // 0-1. PENDING SELL 가드: PENDING SELL이 있는 ticker는 제외
+        // 1. PENDING 주문 확인/취소
+        handlePendingOrdersInternal();
+
+        // 2. 보유 타임아웃 강제매도
+        executeTimeout(activeItems, userMap);
+
+        // 3. 손절 체크 + 매도 (isActive=false 설정)
+        List<TradingTarget> stopLossItems = executeStopLoss(activeItems, userMap);
+        activeItems.removeAll(stopLossItems);
+
+        // 4. 트레일링스톱 (1분봉)
+        executeTrailingStop(activeItems, userMap);
+
+        log.info("[Risk] ========== Risk Management End ==========");
+    }
+
+    @Override
+    @Transactional
+    public void executeAiTrading() {
+        List<TradingTarget> activeItems = new ArrayList<>(tradingTargetPort.findActiveItems());
+        if (activeItems.isEmpty()) return;
+
+        Map<Long, User> userMap = buildUserMap(activeItems);
+        activeItems = filterByTradingHours(activeItems, userMap);
+        if (activeItems.isEmpty()) return;
+
+        log.info("[AI] ========== AI Trading Start (Active: {}) ==========", activeItems.size());
+
+        // 1. PENDING SELL 가드: PENDING SELL이 있는 ticker 제외
         activeItems.removeIf(item ->
                 tradeLogPort.hasPendingSell(item.getUserId(), item.getTicker()));
 
-        // 0-2. 보유 타임아웃 체크: 첫 매수 후 MAX_HOLDING_MINUTES 초과 시 강제 매도
-        ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Asia/Seoul"));
-        for (TradingTarget item : new ArrayList<>(activeItems)) {
-            User user = userMap.get(item.getUserId());
-            if (user == null) continue;
-
-            int holding = tradeLogPort.getHoldingCount(item.getUserId(), item.getTicker());
-            if (holding <= 0) continue;
-
-            ZonedDateTime openedAt = tradeLogPort.getPositionOpenedAt(item.getUserId(), item.getTicker());
-            if (openedAt == null) continue;
-
-            long minutes = Duration.between(openedAt, now).toMinutes();
-            if (minutes >= MAX_HOLDING_MINUTES) {
-                try {
-                    BigDecimal currentPrice = brokerApiPort.getCurrentPrice(user, item.getTicker());
-                    if (currentPrice != null && currentPrice.compareTo(BigDecimal.ZERO) > 0) {
-                        executeOrder(user, item, StockOrder.OrderType.SELL, currentPrice);
-                        notificationPort.sendMessage(user.getUserId(),
-                                String.format("[Timeout] %s force sold after %dmin", item.getTicker(), minutes));
-                    }
-                } catch (Exception e) {
-                    log.error("[Timeout] {} force sell failed: {}", item.getTicker(), e.getMessage());
-                }
-            }
-        }
-
         if (activeItems.isEmpty()) {
-            log.info("[Cycle] ========== Trading Cycle End (all filtered) ==========");
+            log.info("[AI] ========== AI Trading End (all filtered) ==========");
             return;
         }
 
-        // 1. 손절 체크
-        List<TradingTarget> stopLossItems = executeStopLoss(activeItems, userMap);
-        activeItems.removeAll(stopLossItems);
-        if (activeItems.isEmpty()) {
-            log.info("[Cycle] ========== Trading Cycle End (all stop-loss) ==========");
-            return;
-        }
-
-        // 2. 캔들 fetch (1min + 5min — 한번만)
+        // 2. 캔들 fetch (1min + 5min)
         Map<String, CandleData> candleCache = fetchAllCandles(activeItems, userMap);
 
-        // 3. 트레일링스톱 (1min 캔들 사용)
-        executeTrailingStop(activeItems, userMap, candleCache);
-
-        // 4. AI 예측
+        // 3. AI 예측
         Map<String, AiModelPort.PredictionResult> predictions = fetchPredictions(activeItems, candleCache);
 
-        // 5. 주문 실행 + 알림
+        // 4. 주문 실행 + 알림
         executeOrderByPrediction(activeItems, userMap, predictions, candleCache);
 
-        log.info("[Cycle] ========== Trading Cycle End ==========");
+        log.info("[AI] ========== AI Trading End ==========");
     }
 
     public BrokerApiPort.OrderResult executeOrder(User user, TradingTarget item,
@@ -175,12 +161,17 @@ public class TradingService implements TradingUseCase {
         return result;
     }
 
+    private Map<Long, User> buildUserMap(List<TradingTarget> items) {
+        return items.stream()
+                .map(item -> userPort.findById(item.getUserId()).orElse(null))
+                .filter(Objects::nonNull)
+                .collect(Collectors.toMap(User::getUserId, Function.identity(), (a, b) -> a));
+    }
+
     /**
      * PENDING 주문 확인/취소 처리
      */
-    @Override
-    @Transactional
-    public void handlePendingOrders() {
+    private void handlePendingOrdersInternal() {
         ZonedDateTime threshold = ZonedDateTime.now(ZoneId.of("Asia/Seoul")).minusMinutes(CANCEL_TIMEOUT_MINUTES);
         List<TradeLog> pendings = tradeLogPort.findPendingBefore(threshold);
 
@@ -215,75 +206,120 @@ public class TradingService implements TradingUseCase {
         }
     }
 
-    // --- 내부 헬퍼 ---
+    private void executeTimeout(List<TradingTarget> activeItems, Map<Long, User> userMap) {
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Asia/Seoul"));
 
-    private void closeMatchingBuys(Long userId, String ticker) {
-        List<TradeLog> filledBuys = tradeLogPort.findFilledBuys(userId, ticker);
-        for (TradeLog buy : filledBuys) {
-            tradeLogPort.updateStatus(buy.getId(), TradeLog.OrderStatus.CLOSED);
-        }
-        if (!filledBuys.isEmpty()) {
-            log.info("[PendingCheck] Closed {} BUY records for {} {}", filledBuys.size(), userId, ticker);
-        }
-    }
+        for (TradingTarget item : activeItems) {
+            User user = userMap.get(item.getUserId());
+            if (user == null) continue;
 
-    private void cleanupPendingOrders() {
-        ZonedDateTime threshold = ZonedDateTime.now(ZoneId.of("Asia/Seoul")).minusMinutes(STALE_PENDING_MINUTES);
-        List<TradeLog> stalePendings = tradeLogPort.findPendingBefore(threshold);
+            int holding = tradeLogPort.getHoldingCount(item.getUserId(), item.getTicker());
+            if (holding <= 0) continue;
 
-        for (TradeLog pending : stalePendings) {
-            User user = userPort.findById(pending.getUserId()).orElse(null);
-            if (user == null) {
-                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.FAILED);
-                continue;
-            }
-            if (pending.getOrderId() == null) {
-                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.FAILED);
-                continue;
-            }
+            ZonedDateTime openedAt = tradeLogPort.getPositionOpenedAt(item.getUserId(), item.getTicker());
+            if (openedAt == null) continue;
 
-            BrokerApiPort.CancelResult result = brokerApiPort.cancelOrder(user, pending.getOrderId());
-            if (result.success()) {
-                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.CANCELLED);
-                log.info("[Init] Stale PENDING cancelled: {}", pending.getOrderId());
-            } else {
-                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.FILLED);
-                log.info("[Init] Stale PENDING already filled: {}", pending.getOrderId());
-
-                if (pending.getAction() == StockOrder.OrderType.SELL) {
-                    closeMatchingBuys(pending.getUserId(), pending.getTicker());
+            long minutes = Duration.between(openedAt, now).toMinutes();
+            if (minutes >= MAX_HOLDING_MINUTES) {
+                try {
+                    BigDecimal currentPrice = brokerApiPort.getCurrentPrice(user, item.getTicker());
+                    if (currentPrice != null && currentPrice.compareTo(BigDecimal.ZERO) > 0) {
+                        executeOrder(user, item, StockOrder.OrderType.SELL, currentPrice);
+                        notificationPort.sendMessage(user.getUserId(),
+                                String.format("[Timeout] %s force sold after %dmin", item.getTicker(), minutes));
+                    }
+                } catch (Exception e) {
+                    log.error("[Timeout] {} force sell failed: {}", item.getTicker(), e.getMessage());
                 }
             }
         }
     }
 
-    private List<TradingTarget> filterByTradingHours(List<TradingTarget> items, Map<Long, User> userMap) {
-        LocalTime now = ZonedDateTime.now(ZoneId.of("Asia/Seoul")).toLocalTime();
+    private List<TradingTarget> executeStopLoss(List<TradingTarget> activeItems, Map<Long, User> userMap) {
+        List<TradingTarget> stopLossItems = new ArrayList<>();
 
-        return items.stream().filter(item -> {
+        for (TradingTarget item : activeItems) {
             User user = userMap.get(item.getUserId());
-            if (user == null) return false;
+            if (user == null) continue;
 
-            LocalTime start = user.getTradingStartTime();
-            LocalTime end = user.getTradingEndTime();
-            if (start == null || end == null) return true;
+            Asset asset = assetUseCase.getAccountAsset(user.getUserId());
+            if (asset == null || asset.getOwnedStocks() == null) continue;
 
-            if (start.isAfter(end)) {
-                return !now.isBefore(start) || !now.isAfter(end);
+            Optional<Asset.OwnedStock> holdingOpt = asset.getOwnedStocks().stream()
+                    .filter(s -> s.getStockCode().equals(item.getTicker()))
+                    .findFirst();
+
+            if (holdingOpt.isEmpty()) continue;
+
+            Asset.OwnedStock holding = holdingOpt.get();
+            BigDecimal profitRate = holding.getProfitRate();
+
+            if (item.isStopLossTriggered(profitRate)) {
+                log.warn("[StopLoss] {} triggered! P&L: {}% (threshold: {}%)",
+                        item.getTicker(), profitRate, item.getStopLossThreshold());
+
+                executeOrder(user, item, StockOrder.OrderType.SELL, holding.getCurrentPrice());
+                tradingTargetPort.save(item.toBuilder().active(false).build());
+                stopLossItems.add(item);
+
+                log.warn("[StopLoss] {} auto-trading disabled", item.getTicker());
             }
-            return !now.isBefore(start) && !now.isAfter(end);
-        }).collect(Collectors.toCollection(ArrayList::new));
+        }
+
+        return stopLossItems;
+    }
+
+    private void executeTrailingStop(List<TradingTarget> activeItems, Map<Long, User> userMap) {
+        for (TradingTarget item : activeItems) {
+            if (!item.isTrailingStopEnabled()) continue;
+
+            User user = userMap.get(item.getUserId());
+            if (user == null) continue;
+
+            try {
+                Asset asset = assetUseCase.getAccountAsset(user.getUserId());
+                if (asset == null || asset.getOwnedStocks() == null) continue;
+
+                Optional<Asset.OwnedStock> holdingOpt = asset.getOwnedStocks().stream()
+                        .filter(s -> s.getStockCode().equals(item.getTicker()))
+                        .findFirst();
+
+                if (holdingOpt.isEmpty()) continue;
+
+                Asset.OwnedStock holding = holdingOpt.get();
+                BigDecimal currentProfitRate = holding.getProfitRate();
+
+                if (currentProfitRate.compareTo(BigDecimal.ZERO) <= 0) continue;
+
+                List<StockCandle> candles = brokerApiPort.getRecentCandles(user, item.getTicker(), 60);
+                if (candles == null || candles.isEmpty()) continue;
+
+                BigDecimal windowHigh = StockCandle.windowHigh(candles, item.getTrailingWindowMinutes());
+                BigDecimal currentPrice = holding.getCurrentPrice();
+
+                if (item.isTrailingStopTriggered(windowHigh, currentPrice)) {
+                    log.warn("[TrailingStop] {} triggered! {}min high: {} -> current: {} (threshold: {}%)",
+                            item.getTicker(), item.getTrailingWindowMinutes(),
+                            windowHigh, currentPrice, item.getTrailingStopPercentage());
+
+                    executeOrder(user, item, StockOrder.OrderType.SELL, currentPrice);
+
+                    log.info("[TrailingStop] {} sold (P&L: {}%), auto-trading maintained",
+                            item.getTicker(), currentProfitRate);
+                }
+            } catch (Exception e) {
+                log.error("[TrailingStop] {} failed: {}", item.getTicker(), e.getMessage());
+            }
+        }
     }
 
     private Map<String, CandleData> fetchAllCandles(List<TradingTarget> items, Map<Long, User> userMap) {
         Map<String, User> tickerToUser = new LinkedHashMap<>();
-        Set<String> predictionTickers = new HashSet<>();
         for (TradingTarget item : items) {
             User user = userMap.get(item.getUserId());
             if (user != null) {
                 String predTicker = item.getPredictionTicker();
                 tickerToUser.putIfAbsent(predTicker, user);
-                predictionTickers.add(predTicker);
                 tickerToUser.putIfAbsent(item.getTicker(), user);
             }
         }
@@ -293,21 +329,16 @@ public class TradingService implements TradingUseCase {
         for (Map.Entry<String, User> entry : tickerToUser.entrySet()) {
             String ticker = entry.getKey();
             User user = entry.getValue();
-            boolean needsFiveMin = predictionTickers.contains(ticker);
 
             try {
                 List<StockCandle> minute = brokerApiPort.getRecentCandles(user, ticker, 60);
+                minute = minute != null ? minute : List.of();
+                sleep(100);
+                List<StockCandle> fiveMin = brokerApiPort.getRecentCandles5Min(user, ticker, 120);
+                fiveMin = fiveMin != null ? fiveMin : List.of();
                 sleep(100);
 
-                List<StockCandle> fiveMin = List.of();
-                if (needsFiveMin) {
-                    fiveMin = brokerApiPort.getRecentCandles5Min(user, ticker, 120);
-                    sleep(100);
-                    fiveMin = fiveMin != null ? fiveMin : List.of();
-                }
-
-                cache.put(ticker, new CandleData(
-                        minute != null ? minute : List.of(), fiveMin));
+                cache.put(ticker, new CandleData(minute, fiveMin));
             } catch (Exception e) {
                 log.error("[Fetch] {} failed: {}", ticker, e.getMessage());
                 cache.put(ticker, new CandleData(List.of(), List.of()));
@@ -391,79 +422,13 @@ public class TradingService implements TradingUseCase {
         }
     }
 
-    private List<TradingTarget> executeStopLoss(List<TradingTarget> activeItems, Map<Long, User> userMap) {
-        List<TradingTarget> stopLossItems = new ArrayList<>();
-
-        for (TradingTarget item : activeItems) {
-            User user = userMap.get(item.getUserId());
-            if (user == null) continue;
-
-            Asset asset = assetUseCase.getAccountAsset(user.getUserId());
-            if (asset == null || asset.getOwnedStocks() == null) continue;
-
-            Optional<Asset.OwnedStock> holdingOpt = asset.getOwnedStocks().stream()
-                    .filter(s -> s.getStockCode().equals(item.getTicker()))
-                    .findFirst();
-
-            if (holdingOpt.isEmpty()) continue;
-
-            Asset.OwnedStock holding = holdingOpt.get();
-            BigDecimal profitRate = holding.getProfitRate();
-
-            if (item.isStopLossTriggered(profitRate)) {
-                log.warn("[StopLoss] {} triggered! P&L: {}% (threshold: {}%)",
-                        item.getTicker(), profitRate, item.getStopLossThreshold());
-
-                executeOrder(user, item, StockOrder.OrderType.SELL, holding.getCurrentPrice());
-                tradingTargetPort.save(item.toBuilder().active(false).build());
-                stopLossItems.add(item);
-
-                log.warn("[StopLoss] {} auto-trading disabled", item.getTicker());
-            }
+    private void closeMatchingBuys(Long userId, String ticker) {
+        List<TradeLog> filledBuys = tradeLogPort.findFilledBuys(userId, ticker);
+        for (TradeLog buy : filledBuys) {
+            tradeLogPort.updateStatus(buy.getId(), TradeLog.OrderStatus.CLOSED);
         }
-
-        return stopLossItems;
-    }
-
-    private void executeTrailingStop(List<TradingTarget> activeItems, Map<Long, User> userMap,
-                                      Map<String, CandleData> candleCache) {
-        for (TradingTarget item : activeItems) {
-            if (!item.isTrailingStopEnabled()) continue;
-
-            User user = userMap.get(item.getUserId());
-            if (user == null) continue;
-
-            Asset asset = assetUseCase.getAccountAsset(user.getUserId());
-            if (asset == null || asset.getOwnedStocks() == null) continue;
-
-            Optional<Asset.OwnedStock> holdingOpt = asset.getOwnedStocks().stream()
-                    .filter(s -> s.getStockCode().equals(item.getTicker()))
-                    .findFirst();
-
-            if (holdingOpt.isEmpty()) continue;
-
-            Asset.OwnedStock holding = holdingOpt.get();
-            BigDecimal currentProfitRate = holding.getProfitRate();
-
-            if (currentProfitRate.compareTo(BigDecimal.ZERO) <= 0) continue;
-
-            CandleData data = candleCache.get(item.getTicker());
-            List<StockCandle> candles = data != null ? data.minute() : null;
-            if (candles == null || candles.isEmpty()) continue;
-
-            BigDecimal windowHigh = StockCandle.windowHigh(candles, item.getTrailingWindowMinutes());
-            BigDecimal currentPrice = holding.getCurrentPrice();
-
-            if (item.isTrailingStopTriggered(windowHigh, currentPrice)) {
-                log.warn("[TrailingStop] {} triggered! {}min high: {} -> current: {} (threshold: {}%)",
-                        item.getTicker(), item.getTrailingWindowMinutes(),
-                        windowHigh, currentPrice, item.getTrailingStopPercentage());
-
-                executeOrder(user, item, StockOrder.OrderType.SELL, currentPrice);
-
-                log.info("[TrailingStop] {} sold (P&L: {}%), auto-trading maintained",
-                        item.getTicker(), currentProfitRate);
-            }
+        if (!filledBuys.isEmpty()) {
+            log.info("[PendingCheck] Closed {} BUY records for {} {}", filledBuys.size(), userId, ticker);
         }
     }
 
@@ -480,6 +445,54 @@ public class TradingService implements TradingUseCase {
         } catch (Exception e) {
             log.error("[Quantity] Failed to get holdings: {}", e.getMessage());
             return 0;
+        }
+    }
+
+    private List<TradingTarget> filterByTradingHours(List<TradingTarget> items, Map<Long, User> userMap) {
+        LocalTime now = ZonedDateTime.now(ZoneId.of("Asia/Seoul")).toLocalTime();
+
+        return items.stream().filter(item -> {
+            User user = userMap.get(item.getUserId());
+            if (user == null) return false;
+
+            LocalTime start = user.getTradingStartTime();
+            LocalTime end = user.getTradingEndTime();
+            if (start == null || end == null) return true;
+
+            if (start.isAfter(end)) {
+                return !now.isBefore(start) || !now.isAfter(end);
+            }
+            return !now.isBefore(start) && !now.isAfter(end);
+        }).collect(Collectors.toCollection(ArrayList::new));
+    }
+
+    private void cleanupPendingOrders() {
+        ZonedDateTime threshold = ZonedDateTime.now(ZoneId.of("Asia/Seoul")).minusMinutes(STALE_PENDING_MINUTES);
+        List<TradeLog> stalePendings = tradeLogPort.findPendingBefore(threshold);
+
+        for (TradeLog pending : stalePendings) {
+            User user = userPort.findById(pending.getUserId()).orElse(null);
+            if (user == null) {
+                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.FAILED);
+                continue;
+            }
+            if (pending.getOrderId() == null) {
+                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.FAILED);
+                continue;
+            }
+
+            BrokerApiPort.CancelResult result = brokerApiPort.cancelOrder(user, pending.getOrderId());
+            if (result.success()) {
+                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.CANCELLED);
+                log.info("[Init] Stale PENDING cancelled: {}", pending.getOrderId());
+            } else {
+                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.FILLED);
+                log.info("[Init] Stale PENDING already filled: {}", pending.getOrderId());
+
+                if (pending.getAction() == StockOrder.OrderType.SELL) {
+                    closeMatchingBuys(pending.getUserId(), pending.getTicker());
+                }
+            }
         }
     }
 

@@ -4,7 +4,7 @@ public interface TradingUseCase {
 
     void initialize();
 
-    void executeTradingCycle();
+    void executeRiskManagement();
 
-    void handlePendingOrders();
+    void executeAiTrading();
 }
