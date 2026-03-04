@@ -59,9 +59,9 @@ public class AiModelService implements AiModelUseCase {
                     item.getProfitAtr(), item.getStopAtr(), item.getMaxHolding(),
                     item.getMinThreshold(), item.getTrainingPeriodYears(), item.getTuningTrials()
             );
-            aiModelPort.trainModel(ticker, userId, params);
+            String jobId = aiModelPort.trainModel(ticker, userId, params);
             aiTrainingHistoryPort.save(saved.withStatus(TrainingStatus.TRAINING));
-            log.info("[AiModelService] Training started for {}", ticker);
+            log.info("[AiModelService] Training started for {}, jobId={}(null=409)", ticker, jobId);
         } catch (Exception e) {
             log.error("[AiModelService] Training failed to start: {}", ticker, e);
             aiTrainingHistoryPort.save(saved.withStatus(TrainingStatus.FAILED, e.getMessage()));

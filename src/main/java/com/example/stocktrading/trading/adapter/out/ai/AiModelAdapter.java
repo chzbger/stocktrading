@@ -134,6 +134,13 @@ public class AiModelAdapter implements AiModelPort {
             log.info("[AI] Training job queued: jobId={}, status={}", jobId, status);
 
             return jobId;
+        } catch (org.springframework.web.client.HttpClientErrorException e) {
+            if (e.getStatusCode().value() == 409) { // 이미 학습중
+                log.info("[AI] Training already in progress for {} (409 Conflict)", ticker);
+                return null;
+            }
+            log.error("[AI] Training API call failed (HTTP {})", e.getStatusCode().value(), e);
+            throw new RuntimeException("Training execution failed", e);
         } catch (Exception e) {
             log.error("[AI] Training API call failed", e);
             throw new RuntimeException("Training execution failed", e);
