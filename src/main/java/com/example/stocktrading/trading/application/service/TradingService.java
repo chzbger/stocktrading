@@ -177,39 +177,98 @@ public class TradingService implements TradingUseCase {
     }
 
     /**
-     * PENDING 주문 확인/취소 처리
+     * PENDING 주문 확인/취소 처리 (BUY/SELL 분리)
      */
     private void handlePendingOrdersInternal() {
         ZonedDateTime threshold = ZonedDateTime.now(ZoneId.of("Asia/Seoul")).minusMinutes(CANCEL_TIMEOUT_MINUTES);
         List<TradeLog> pendings = tradeLogPort.findPendingBefore(threshold);
+        if (pendings.isEmpty()) return;
 
-        for (TradeLog pending : pendings) {
-            User user = userPort.findById(pending.getUserId()).orElse(null);
-            if (user == null) continue;
+        handlePendingBuys(pendings.stream()
+                .filter(p -> p.getAction() == StockOrder.OrderType.BUY).toList());
+        handlePendingSells(pendings.stream()
+                .filter(p -> p.getAction() == StockOrder.OrderType.SELL).toList());
+    }
 
-            if (pending.getOrderId() == null) {
-                // orderId 없는 PENDING은 FAILED 처리
-                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.FAILED);
+    /**
+     * BUY PENDING 처리: 미체결이면 취소, 체결이면 FILLED
+     */
+    private void handlePendingBuys(List<TradeLog> pendingBuys) {
+        for (TradeLog buy : pendingBuys) {
+            if (buy.getOrderId() == null) {
+                tradeLogPort.updateStatus(buy.getId(), TradeLog.OrderStatus.FAILED);
                 continue;
             }
 
-            log.info("[PendingCheck] action: {} ticker: {} orderId: {}",
-                    pending.getAction(), pending.getTicker(), pending.getOrderId());
+            User user = userPort.findById(buy.getUserId()).orElse(null);
+            if (user == null) continue;
 
-            BrokerApiPort.CancelResult result = brokerApiPort.cancelOrder(user, pending.getOrderId());
+            log.info("[PendingBuy] {} orderId: {}", buy.getTicker(), buy.getOrderId());
+            BrokerApiPort.CancelResult result = brokerApiPort.cancelOrder(user, buy.getOrderId());
+
             if (result.success()) {
-                // 취소 성공
-                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.CANCELLED);
-                log.info("[PendingCheck] Cancelled: {}", pending.getOrderId());
+                tradeLogPort.updateStatus(buy.getId(), TradeLog.OrderStatus.CANCELLED);
+                log.info("[PendingBuy] 취소 성공: {}", buy.getOrderId());
             } else {
-                // 취소 실패 = 이미 체결됨
-                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.FILLED);
-                log.info("[PendingCheck] Already filled: {}", pending.getOrderId());
+                tradeLogPort.updateStatus(buy.getId(), TradeLog.OrderStatus.FILLED);
+                log.info("[PendingBuy] 체결 확인: {}", buy.getOrderId());
+            }
+        }
+    }
 
-                // SELL 체결 시 → 해당 ticker의 BUY FILLED 전부 → CLOSED
-                if (pending.getAction() == StockOrder.OrderType.SELL) {
-                    closeMatchingBuys(pending.getUserId(), pending.getTicker());
-                }
+    /**
+     * SELL PENDING 처리: 중복 제거 → 보유 확인 → 체결 시 BUY FILLED→CLOSED
+     */
+    private void handlePendingSells(List<TradeLog> pendingSells) {
+        if (pendingSells.isEmpty()) return;
+
+        // 1. (userId, ticker) 기준 그룹핑
+        Map<String, List<TradeLog>> groups = pendingSells.stream()
+                .collect(Collectors.groupingBy(p -> p.getUserId() + ":" + p.getTicker()));
+
+        for (List<TradeLog> group : groups.values()) {
+            // 2. 시간순 정렬 → 가장 오래된 1개만 처리, 나머지 중복 취소
+            group.sort(Comparator.comparing(TradeLog::getTimestamp));
+            for (int i = 1; i < group.size(); i++) {
+                TradeLog dup = group.get(i);
+                tradeLogPort.updateStatus(dup.getId(), TradeLog.OrderStatus.CANCELLED);
+                log.warn("[PendingSell] 중복 SELL 취소: {} id={}", dup.getTicker(), dup.getId());
+            }
+
+            TradeLog sell = group.get(0);
+
+            if (sell.getOrderId() == null) {
+                tradeLogPort.updateStatus(sell.getId(), TradeLog.OrderStatus.FAILED);
+                continue;
+            }
+
+            User user = userPort.findById(sell.getUserId()).orElse(null);
+            if (user == null) continue;
+
+            // 3. 보유 수량 확인
+            int holding = tradeLogPort.getHoldingCount(sell.getUserId(), sell.getTicker());
+
+            if (holding <= 0) {
+                // 보유 없음 → 브로커 취소 시도 후 CANCELLED (유령 SELL 방지)
+                brokerApiPort.cancelOrder(user, sell.getOrderId());
+                tradeLogPort.updateStatus(sell.getId(), TradeLog.OrderStatus.CANCELLED);
+                log.warn("[PendingSell] 보유 없는 SELL 취소: {} id={}", sell.getTicker(), sell.getId());
+                continue;
+            }
+
+            // 4. 보유 있음 → 브로커 취소 시도
+            log.info("[PendingSell] {} orderId: {} holding: {}", sell.getTicker(), sell.getOrderId(), holding);
+            BrokerApiPort.CancelResult result = brokerApiPort.cancelOrder(user, sell.getOrderId());
+
+            if (result.success()) {
+                // 취소 성공 → 아직 보유 중
+                tradeLogPort.updateStatus(sell.getId(), TradeLog.OrderStatus.CANCELLED);
+                log.info("[PendingSell] 취소 성공: {}", sell.getOrderId());
+            } else {
+                // 취소 실패 = 이미 체결됨 → BUY FILLED → CLOSED
+                tradeLogPort.updateStatus(sell.getId(), TradeLog.OrderStatus.FILLED);
+                closeMatchingBuys(sell.getUserId(), sell.getTicker());
+                log.info("[PendingSell] 체결 확인: {} → BUY {}건 CLOSED", sell.getOrderId(), holding);
             }
         }
     }
@@ -436,7 +495,7 @@ public class TradingService implements TradingUseCase {
             tradeLogPort.updateStatus(buy.getId(), TradeLog.OrderStatus.CLOSED);
         }
         if (!filledBuys.isEmpty()) {
-            log.info("[PendingCheck] Closed {} BUY records for {} {}", filledBuys.size(), userId, ticker);
+            log.info("[PendingSell] Closed {} BUY records for {} {}", filledBuys.size(), userId, ticker);
         }
     }
 
@@ -477,31 +536,13 @@ public class TradingService implements TradingUseCase {
     private void cleanupPendingOrders() {
         ZonedDateTime threshold = ZonedDateTime.now(ZoneId.of("Asia/Seoul")).minusMinutes(STALE_PENDING_MINUTES);
         List<TradeLog> stalePendings = tradeLogPort.findPendingBefore(threshold);
+        if (stalePendings.isEmpty()) return;
 
-        for (TradeLog pending : stalePendings) {
-            User user = userPort.findById(pending.getUserId()).orElse(null);
-            if (user == null) {
-                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.FAILED);
-                continue;
-            }
-            if (pending.getOrderId() == null) {
-                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.FAILED);
-                continue;
-            }
-
-            BrokerApiPort.CancelResult result = brokerApiPort.cancelOrder(user, pending.getOrderId());
-            if (result.success()) {
-                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.CANCELLED);
-                log.info("[Init] Stale PENDING cancelled: {}", pending.getOrderId());
-            } else {
-                tradeLogPort.updateStatus(pending.getId(), TradeLog.OrderStatus.FILLED);
-                log.info("[Init] Stale PENDING already filled: {}", pending.getOrderId());
-
-                if (pending.getAction() == StockOrder.OrderType.SELL) {
-                    closeMatchingBuys(pending.getUserId(), pending.getTicker());
-                }
-            }
-        }
+        log.info("[Init] Stale PENDING 정리: {}건", stalePendings.size());
+        handlePendingBuys(stalePendings.stream()
+                .filter(p -> p.getAction() == StockOrder.OrderType.BUY).toList());
+        handlePendingSells(stalePendings.stream()
+                .filter(p -> p.getAction() == StockOrder.OrderType.SELL).toList());
     }
 
     private void cleanupTraining() {
