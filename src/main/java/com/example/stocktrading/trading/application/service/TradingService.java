@@ -76,14 +76,22 @@ public class TradingService implements TradingUseCase {
         // 1. PENDING 주문 확인/취소
         handlePendingOrdersInternal();
 
-        // 2. 보유 타임아웃 강제매도
+        // 2. PENDING SELL 가드: 이미 매도 주문이 진행중인 ticker 제외 (중복 매도 방지)
+        activeItems.removeIf(item ->
+                tradeLogPort.hasPendingSell(item.getUserId(), item.getTicker()));
+        if (activeItems.isEmpty()) {
+            log.info("[Risk] ========== Risk Management End (all have pending sells) ==========");
+            return;
+        }
+
+        // 3. 보유 타임아웃 강제매도
         executeTimeout(activeItems, userMap);
 
-        // 3. 손절 체크 + 매도 (isActive=false 설정)
+        // 4. 손절 체크 + 매도 (isActive=false 설정)
         List<TradingTarget> stopLossItems = executeStopLoss(activeItems, userMap);
         activeItems.removeAll(stopLossItems);
 
-        // 4. 트레일링스톱 (1분봉)
+        // 5. 트레일링스톱 (1분봉)
         executeTrailingStop(activeItems, userMap);
 
         log.info("[Risk] ========== Risk Management End ==========");
