@@ -17,7 +17,7 @@ public interface TradeLogPort {
 
     List<TradeLog> findPendingBefore(ZonedDateTime threshold);
 
-    List<TradeLog> findFilledBuys(Long userId, String ticker);
+    int closeFilledBuysBefore(Long userId, String ticker, Long beforeSellId);
 
     boolean hasPendingSell(Long userId, String ticker);
 

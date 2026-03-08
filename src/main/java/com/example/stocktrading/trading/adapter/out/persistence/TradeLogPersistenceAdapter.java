@@ -57,11 +57,9 @@ public class TradeLogPersistenceAdapter implements TradeLogPort {
     }
 
     @Override
-    public List<TradeLog> findFilledBuys(Long userId, String ticker) {
-        return tradeLogRepository.findByUserIdAndTickerAndActionAndStatus(
-                userId, ticker, StockOrder.OrderType.BUY, TradeLog.OrderStatus.FILLED).stream()
-                .map(this::mapToDomain)
-                .toList();
+    @Transactional
+    public int closeFilledBuysBefore(Long userId, String ticker, Long beforeSellId) {
+        return tradeLogRepository.closeFilledBuysBefore(userId, ticker, beforeSellId);
     }
 
     @Override

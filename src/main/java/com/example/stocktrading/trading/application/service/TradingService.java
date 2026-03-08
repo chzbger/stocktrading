@@ -1,22 +1,13 @@
 package com.example.stocktrading.trading.application.service;
 
-import com.example.stocktrading.user.application.port.out.UserPort;
-import com.example.stocktrading.user.domain.User;
 import com.example.stocktrading.trading.application.port.in.AssetUseCase;
 import com.example.stocktrading.trading.application.port.in.TradingUseCase;
-import com.example.stocktrading.trading.application.port.out.AiModelPort;
-import com.example.stocktrading.trading.application.port.out.AiTrainingHistoryPort;
-import com.example.stocktrading.trading.application.port.out.BrokerApiPort;
-import com.example.stocktrading.trading.application.port.out.TradeLogPort;
-import com.example.stocktrading.trading.application.port.out.TradingTargetPort;
-import com.example.stocktrading.trading.domain.TradingTarget;
-import com.example.stocktrading.trading.domain.TrainingHistory;
+import com.example.stocktrading.trading.application.port.out.*;
+import com.example.stocktrading.trading.domain.*;
 import com.example.stocktrading.trading.domain.TrainingHistory.TrainingStatus;
-import com.example.stocktrading.trading.domain.Asset;
-import com.example.stocktrading.trading.domain.StockCandle;
-import com.example.stocktrading.trading.domain.StockOrder;
-import com.example.stocktrading.trading.domain.TradeLog;
 import com.example.stocktrading.user.application.port.out.NotificationPort;
+import com.example.stocktrading.user.application.port.out.UserPort;
+import com.example.stocktrading.user.domain.User;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -45,8 +36,7 @@ public class TradingService implements TradingUseCase {
     private final AiModelPort aiModelPort;
     private final NotificationPort notificationPort;
 
-    private static final int CANCEL_TIMEOUT_MINUTES = 2;
-    private static final int STALE_PENDING_MINUTES = 10;
+    private static final int PENDING_TIMEOUT_MINUTES = 2;
     private static final int MAX_HOLDING_MINUTES = 25;
 
     private record CandleData(List<StockCandle> minute, List<StockCandle> fiveMin) {}
@@ -57,8 +47,8 @@ public class TradingService implements TradingUseCase {
         // 학습 진행중 상태인것들 취소 처리
         cleanupTraining();
 
-        // PENDING 정리 (10분 이상)
-        cleanupPendingOrders();
+        // 오래된 PENDING 취소
+        handlePendingOrder();
     }
 
     @Override
@@ -73,12 +63,11 @@ public class TradingService implements TradingUseCase {
 
         log.info("[Risk] ========== Risk Management Start (Active: {}) ==========", activeItems.size());
 
-        // 1. PENDING 주문 확인/취소
-        handlePendingOrdersInternal();
+        // 1. 오래된 PENDING 취소
+        handlePendingOrder();
 
-        // 2. PENDING SELL 가드: 이미 매도 주문이 진행중인 ticker 제외 (중복 매도 방지)
-        activeItems.removeIf(item ->
-                tradeLogPort.hasPendingSell(item.getUserId(), item.getTicker()));
+        // 2. 이미 매도 주문이 진행중인 ticker 제외 (중복 매도 방지)
+        activeItems.removeIf(item -> tradeLogPort.hasPendingSell(item.getUserId(), item.getTicker()));
         if (activeItems.isEmpty()) {
             log.info("[Risk] ========== Risk Management End (all have pending sells) ==========");
             return;
@@ -87,9 +76,8 @@ public class TradingService implements TradingUseCase {
         // 3. 보유 타임아웃 강제매도
         executeTimeout(activeItems, userMap);
 
-        // 4. 손절 체크 + 매도 (isActive=false 설정)
-        List<TradingTarget> stopLossItems = executeStopLoss(activeItems, userMap);
-        activeItems.removeAll(stopLossItems);
+        // 4. 손절 체크 + 매도
+        executeStopLoss(activeItems, userMap);
 
         // 5. 트레일링스톱 (1분봉)
         executeTrailingStop(activeItems, userMap);
@@ -109,22 +97,13 @@ public class TradingService implements TradingUseCase {
 
         log.info("[AI] ========== AI Trading Start (Active: {}) ==========", activeItems.size());
 
-        // 1. PENDING SELL 가드: PENDING SELL이 있는 ticker 제외
-        activeItems.removeIf(item ->
-                tradeLogPort.hasPendingSell(item.getUserId(), item.getTicker()));
-
-        if (activeItems.isEmpty()) {
-            log.info("[AI] ========== AI Trading End (all filtered) ==========");
-            return;
-        }
-
-        // 2. 캔들 fetch (1min + 5min)
+        // 1. 캔들 fetch (1min + 5min)
         Map<String, CandleData> candleCache = fetchAllCandles(activeItems, userMap);
 
-        // 3. AI 예측
+        // 2. AI 예측
         Map<String, AiModelPort.PredictionResult> predictions = fetchPredictions(activeItems, candleCache);
 
-        // 4. 주문 실행 + 알림
+        // 3. 주문 실행 + 알림
         executeOrderByPrediction(activeItems, userMap, predictions, candleCache);
 
         log.info("[AI] ========== AI Trading End ==========");
@@ -179,183 +158,146 @@ public class TradingService implements TradingUseCase {
     /**
      * PENDING 주문 확인/취소 처리 (BUY/SELL 분리)
      */
-    private void handlePendingOrdersInternal() {
-        ZonedDateTime threshold = ZonedDateTime.now(ZoneId.of("Asia/Seoul")).minusMinutes(CANCEL_TIMEOUT_MINUTES);
-        List<TradeLog> pendings = tradeLogPort.findPendingBefore(threshold);
-        if (pendings.isEmpty()) return;
+    private void handlePendingOrder() {
+        ZonedDateTime threshold = ZonedDateTime.now(ZoneId.of("Asia/Seoul")).minusMinutes(PENDING_TIMEOUT_MINUTES);
+        List<TradeLog> expiredPendings = tradeLogPort.findPendingBefore(threshold);
+        if (expiredPendings.isEmpty()) return;
 
-        handlePendingBuys(pendings.stream()
-                .filter(p -> p.getAction() == StockOrder.OrderType.BUY).toList());
-        handlePendingSells(pendings.stream()
-                .filter(p -> p.getAction() == StockOrder.OrderType.SELL).toList());
+        for (TradeLog expiredPending : expiredPendings) {
+            if (expiredPending.getAction() == StockOrder.OrderType.BUY) {
+                handlePendingBuy(expiredPending);
+            } else if (expiredPending.getAction() == StockOrder.OrderType.SELL) {
+                handlePendingSell(expiredPending);
+            }
+        }
     }
 
     /**
      * BUY PENDING 처리: 미체결이면 취소, 체결이면 FILLED
      */
-    private void handlePendingBuys(List<TradeLog> pendingBuys) {
-        for (TradeLog buy : pendingBuys) {
-            if (buy.getOrderId() == null) {
-                tradeLogPort.updateStatus(buy.getId(), TradeLog.OrderStatus.FAILED);
-                continue;
+    private void handlePendingBuy(TradeLog pendingBuy) {
+        try {
+            User user = userPort.findById(pendingBuy.getUserId()).orElse(null);
+            if (pendingBuy.getOrderId() == null || user == null) {
+                tradeLogPort.updateStatus(pendingBuy.getId(), TradeLog.OrderStatus.FAILED);
+                return;
             }
 
-            User user = userPort.findById(buy.getUserId()).orElse(null);
-            if (user == null) continue;
-
-            log.info("[PendingBuy] {} orderId: {}", buy.getTicker(), buy.getOrderId());
-            BrokerApiPort.CancelResult result = brokerApiPort.cancelOrder(user, buy.getOrderId());
-
+            log.info("[PendingBuy] {} orderId: {}", pendingBuy.getTicker(), pendingBuy.getOrderId());
+            BrokerApiPort.CancelResult result = brokerApiPort.cancelOrder(user, pendingBuy.getOrderId());
             if (result.success()) {
-                tradeLogPort.updateStatus(buy.getId(), TradeLog.OrderStatus.CANCELLED);
-                log.info("[PendingBuy] 취소 성공: {}", buy.getOrderId());
+                tradeLogPort.updateStatus(pendingBuy.getId(), TradeLog.OrderStatus.CANCELLED);
+                log.info("[PendingBuy] 취소 성공: {}", pendingBuy.getOrderId());
             } else {
-                tradeLogPort.updateStatus(buy.getId(), TradeLog.OrderStatus.FILLED);
-                log.info("[PendingBuy] 체결 확인: {}", buy.getOrderId());
+                tradeLogPort.updateStatus(pendingBuy.getId(), TradeLog.OrderStatus.FILLED);
+                log.info("[PendingBuy] 체결 확인: {}", pendingBuy.getOrderId());
             }
+        } catch (Exception e) {
+            log.error("[PendingBuy] {} id={} failed: {}", pendingBuy.getTicker(), pendingBuy.getId(), e.getMessage());
         }
     }
 
     /**
      * SELL PENDING 처리: 중복 제거 → 보유 확인 → 체결 시 BUY FILLED→CLOSED
      */
-    private void handlePendingSells(List<TradeLog> pendingSells) {
-        if (pendingSells.isEmpty()) return;
-
-        // 1. (userId, ticker) 기준 그룹핑
-        Map<String, List<TradeLog>> groups = pendingSells.stream()
-                .collect(Collectors.groupingBy(p -> p.getUserId() + ":" + p.getTicker()));
-
-        for (List<TradeLog> group : groups.values()) {
-            // 2. 시간순 정렬 → 가장 오래된 1개만 처리, 나머지 중복 취소
-            group.sort(Comparator.comparing(TradeLog::getTimestamp));
-            for (int i = 1; i < group.size(); i++) {
-                TradeLog dup = group.get(i);
-                tradeLogPort.updateStatus(dup.getId(), TradeLog.OrderStatus.CANCELLED);
-                log.warn("[PendingSell] 중복 SELL 취소: {} id={}", dup.getTicker(), dup.getId());
+    private void handlePendingSell(TradeLog pendingSell) {
+        try {
+            User user = userPort.findById(pendingSell.getUserId()).orElse(null);
+            if (pendingSell.getOrderId() == null || user == null) {
+                tradeLogPort.updateStatus(pendingSell.getId(), TradeLog.OrderStatus.FAILED);
+                return;
             }
-
-            TradeLog sell = group.get(0);
-
-            if (sell.getOrderId() == null) {
-                tradeLogPort.updateStatus(sell.getId(), TradeLog.OrderStatus.FAILED);
-                continue;
-            }
-
-            User user = userPort.findById(sell.getUserId()).orElse(null);
-            if (user == null) continue;
-
-            // 3. 보유 수량 확인
-            int holding = tradeLogPort.getHoldingCount(sell.getUserId(), sell.getTicker());
-
-            if (holding <= 0) {
-                // 보유 없음 → 브로커 취소 시도 후 CANCELLED (유령 SELL 방지)
-                brokerApiPort.cancelOrder(user, sell.getOrderId());
-                tradeLogPort.updateStatus(sell.getId(), TradeLog.OrderStatus.CANCELLED);
-                log.warn("[PendingSell] 보유 없는 SELL 취소: {} id={}", sell.getTicker(), sell.getId());
-                continue;
-            }
-
-            // 4. 보유 있음 → 브로커 취소 시도
-            log.info("[PendingSell] {} orderId: {} holding: {}", sell.getTicker(), sell.getOrderId(), holding);
-            BrokerApiPort.CancelResult result = brokerApiPort.cancelOrder(user, sell.getOrderId());
-
+            log.info("[PendingSell] {} orderId: {}", pendingSell.getTicker(), pendingSell.getOrderId());
+            BrokerApiPort.CancelResult result = brokerApiPort.cancelOrder(user, pendingSell.getOrderId());
             if (result.success()) {
-                // 취소 성공 → 아직 보유 중
-                tradeLogPort.updateStatus(sell.getId(), TradeLog.OrderStatus.CANCELLED);
-                log.info("[PendingSell] 취소 성공: {}", sell.getOrderId());
-            } else {
-                // 취소 실패 = 이미 체결됨 → BUY FILLED → CLOSED
-                tradeLogPort.updateStatus(sell.getId(), TradeLog.OrderStatus.FILLED);
-                closeMatchingBuys(sell.getUserId(), sell.getTicker());
-                log.info("[PendingSell] 체결 확인: {} → BUY {}건 CLOSED", sell.getOrderId(), holding);
+                tradeLogPort.updateStatus(pendingSell.getId(), TradeLog.OrderStatus.CANCELLED);
+                log.info("[PendingSell] 취소 성공: {}", pendingSell.getOrderId());
+                return;
             }
+
+            tradeLogPort.updateStatus(pendingSell.getId(), TradeLog.OrderStatus.FILLED);
+            log.info("[PendingSell] 체결 확인: {}", pendingSell.getOrderId());
+
+            // SELL id 이전의 FILLED BUY만 CLOSED
+            int closed = tradeLogPort.closeFilledBuysBefore(pendingSell.getUserId(), pendingSell.getTicker(), pendingSell.getId());
+            log.info("[PendingSell] Closed {} BUY Ticker({}) {}", closed, pendingSell.getTicker(), pendingSell.getUserId());
+
+            notificationPort.sendMessage(user.getUserId(), String.format("[PendingSell] %s ", pendingSell.getTicker()));
+        } catch (Exception e) {
+            log.error("[PendingSell] {} id={} failed: {}", pendingSell.getTicker(), pendingSell.getId(), e.getMessage());
         }
     }
 
     private void executeTimeout(List<TradingTarget> activeItems, Map<Long, User> userMap) {
         ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Asia/Seoul"));
+        for (TradingTarget item : new ArrayList<>(activeItems)) {
+            try {
+                User user = userMap.get(item.getUserId());
+                if (user == null) continue;
+                int holding = tradeLogPort.getHoldingCount(item.getUserId(), item.getTicker());
+                if (holding <= 0) continue;
+                ZonedDateTime openedAt = tradeLogPort.getPositionOpenedAt(item.getUserId(), item.getTicker());
+                if (openedAt == null) continue;
+                long minutes = Duration.between(openedAt, now).toMinutes();
+                if (minutes < MAX_HOLDING_MINUTES) continue;
 
-        for (TradingTarget item : activeItems) {
-            User user = userMap.get(item.getUserId());
-            if (user == null) continue;
+                BigDecimal currentPrice = brokerApiPort.getCurrentPrice(user, item.getTicker());
+                if (currentPrice != null && currentPrice.compareTo(BigDecimal.ZERO) > 0) {
+                    executeOrder(user, item, StockOrder.OrderType.SELL, currentPrice);
+                    activeItems.remove(item);
 
-            int holding = tradeLogPort.getHoldingCount(item.getUserId(), item.getTicker());
-            if (holding <= 0) continue;
-
-            ZonedDateTime openedAt = tradeLogPort.getPositionOpenedAt(item.getUserId(), item.getTicker());
-            if (openedAt == null) continue;
-
-            long minutes = Duration.between(openedAt, now).toMinutes();
-            if (minutes >= MAX_HOLDING_MINUTES) {
-                try {
-                    BigDecimal currentPrice = brokerApiPort.getCurrentPrice(user, item.getTicker());
-                    if (currentPrice != null && currentPrice.compareTo(BigDecimal.ZERO) > 0) {
-                        executeOrder(user, item, StockOrder.OrderType.SELL, currentPrice);
-                        notificationPort.sendMessage(user.getUserId(),
-                                String.format("[Timeout] %s force sold after %dmin", item.getTicker(), minutes));
-                    }
-                } catch (Exception e) {
-                    log.error("[Timeout] {} force sell failed: {}", item.getTicker(), e.getMessage());
+                    notificationPort.sendMessage(user.getUserId(), String.format("[Timeout] %s SELL Order (%d min)", item.getTicker(), minutes));
                 }
+            } catch (Exception e) {
+                log.error("[Timeout] {} force sell failed: {}", item.getTicker(), e.getMessage());
             }
         }
     }
 
-    private List<TradingTarget> executeStopLoss(List<TradingTarget> activeItems, Map<Long, User> userMap) {
-        List<TradingTarget> stopLossItems = new ArrayList<>();
+    private void executeStopLoss(List<TradingTarget> activeItems, Map<Long, User> userMap) {
+        for (TradingTarget item : new ArrayList<>(activeItems)) {
+            try {
+                User user = userMap.get(item.getUserId());
+                if (user == null) continue;
+                Asset asset = assetUseCase.getAccountAsset(user.getUserId());
+                if (asset == null || asset.getOwnedStocks() == null) continue;
 
-        for (TradingTarget item : activeItems) {
-            User user = userMap.get(item.getUserId());
-            if (user == null) continue;
+                Asset.OwnedStock holding = asset.getOwnedStocks().stream()
+                        .filter(s -> s.getStockCode().equals(item.getTicker()))
+                        .findFirst()
+                        .orElse(null);
+                if (holding == null) continue;
 
-            Asset asset = assetUseCase.getAccountAsset(user.getUserId());
-            if (asset == null || asset.getOwnedStocks() == null) continue;
+                BigDecimal profitRate = holding.getProfitRate();
 
-            Optional<Asset.OwnedStock> holdingOpt = asset.getOwnedStocks().stream()
-                    .filter(s -> s.getStockCode().equals(item.getTicker()))
-                    .findFirst();
+                if (item.isStopLossTriggered(profitRate)) {
+                    executeOrder(user, item, StockOrder.OrderType.SELL, holding.getCurrentPrice());
+                    activeItems.remove(item);
 
-            if (holdingOpt.isEmpty()) continue;
-
-            Asset.OwnedStock holding = holdingOpt.get();
-            BigDecimal profitRate = holding.getProfitRate();
-
-            if (item.isStopLossTriggered(profitRate)) {
-                log.warn("[StopLoss] {} triggered! P&L: {}% (threshold: {}%)",
-                        item.getTicker(), profitRate, item.getStopLossThreshold());
-
-                executeOrder(user, item, StockOrder.OrderType.SELL, holding.getCurrentPrice());
-                tradingTargetPort.save(item.toBuilder().active(false).build());
-                stopLossItems.add(item);
-
-                log.warn("[StopLoss] {} auto-trading disabled", item.getTicker());
+                    notificationPort.sendMessage(user.getUserId(), String.format("[StopLoss] %s 손절 매도 (P&L: %s%%)", item.getTicker(), profitRate));
+                }
+            } catch (Exception e) {
+                log.error("[StopLoss] {} failed: {}", item.getTicker(), e.getMessage());
             }
         }
-
-        return stopLossItems;
     }
 
     private void executeTrailingStop(List<TradingTarget> activeItems, Map<Long, User> userMap) {
         for (TradingTarget item : activeItems) {
-            if (!item.isTrailingStopEnabled()) continue;
-
-            User user = userMap.get(item.getUserId());
-            if (user == null) continue;
-
             try {
+                if (!item.isTrailingStopEnabled()) continue;
+                User user = userMap.get(item.getUserId());
+                if (user == null) continue;
                 Asset asset = assetUseCase.getAccountAsset(user.getUserId());
                 if (asset == null || asset.getOwnedStocks() == null) continue;
 
-                Optional<Asset.OwnedStock> holdingOpt = asset.getOwnedStocks().stream()
+                Asset.OwnedStock holding = asset.getOwnedStocks().stream()
                         .filter(s -> s.getStockCode().equals(item.getTicker()))
-                        .findFirst();
+                        .findFirst()
+                        .orElse(null);
+                if (holding == null) continue;
 
-                if (holdingOpt.isEmpty()) continue;
-
-                Asset.OwnedStock holding = holdingOpt.get();
                 BigDecimal currentProfitRate = holding.getProfitRate();
-
                 if (currentProfitRate.compareTo(BigDecimal.ZERO) <= 0) continue;
 
                 List<StockCandle> candles = brokerApiPort.getRecentCandles(user, item.getTicker(), 60);
@@ -365,14 +307,9 @@ public class TradingService implements TradingUseCase {
                 BigDecimal currentPrice = holding.getCurrentPrice();
 
                 if (item.isTrailingStopTriggered(windowHigh, currentPrice)) {
-                    log.warn("[TrailingStop] {} triggered! {}min high: {} -> current: {} (threshold: {}%)",
-                            item.getTicker(), item.getTrailingWindowMinutes(),
-                            windowHigh, currentPrice, item.getTrailingStopPercentage());
-
                     executeOrder(user, item, StockOrder.OrderType.SELL, currentPrice);
 
-                    log.info("[TrailingStop] {} sold (P&L: {}%), auto-trading maintained",
-                            item.getTicker(), currentProfitRate);
+                    notificationPort.sendMessage(user.getUserId(), String.format("[TrailingStop] %s", item.getTicker()));
                 }
             } catch (Exception e) {
                 log.error("[TrailingStop] {} failed: {}", item.getTicker(), e.getMessage());
@@ -433,8 +370,8 @@ public class TradingService implements TradingUseCase {
                 continue;
             }
 
-            TradingTarget firstItem = entry.getValue().get(0);
             try {
+                TradingTarget firstItem = entry.getValue().getFirst();
                 AiModelPort.PredictionResult result = aiModelPort.predict(
                         predTicker, "scalping", firstItem.getUserId(),
                         candles.minute(), candles.fiveMin(),
@@ -455,25 +392,24 @@ public class TradingService implements TradingUseCase {
                                           Map<String, AiModelPort.PredictionResult> predictions,
                                           Map<String, CandleData> candleCache) {
         for (TradingTarget item : items) {
-            User user = userMap.get(item.getUserId());
-            if (user == null) continue;
-
-            String predTicker = item.getPredictionTicker();
-            AiModelPort.PredictionResult rawResult = predictions.get(predTicker);
-            if (rawResult == null || rawResult.prediction() == 0) continue;
-
-            int prediction = item.applyInverse(rawResult.prediction());
-            if (prediction == 0) continue;
-
-            String label = prediction == 1 ? "BUY" : "SELL";
-            StockOrder.OrderType orderType = prediction == 1
-                    ? StockOrder.OrderType.BUY : StockOrder.OrderType.SELL;
-
             try {
+                User user = userMap.get(item.getUserId());
+                if (user == null) continue;
+
+                String predTicker = item.getPredictionTicker();
+                AiModelPort.PredictionResult rawResult = predictions.get(predTicker);
+                if (rawResult == null || rawResult.prediction() == 0) continue;
+
+                int prediction = item.applyInverse(rawResult.prediction());
+                if (prediction == 0) continue;
+
+                String label = prediction == 1 ? "BUY" : "SELL";
+                StockOrder.OrderType orderType = prediction == 1 ? StockOrder.OrderType.BUY : StockOrder.OrderType.SELL;
+
                 CandleData candles = candleCache.get(item.getTicker());
                 BigDecimal price = BigDecimal.ZERO;
                 if (candles != null && !candles.minute().isEmpty()) {
-                    price = candles.minute().get(candles.minute().size() - 1).getClose();
+                    price = candles.minute().getLast().getClose();
                 }
 
                 if (price.compareTo(BigDecimal.ZERO) <= 0) continue;
@@ -486,16 +422,6 @@ public class TradingService implements TradingUseCase {
             } catch (Exception e) {
                 log.error("[Order] Execution failed for {}: {}", item.getTicker(), e.getMessage());
             }
-        }
-    }
-
-    private void closeMatchingBuys(Long userId, String ticker) {
-        List<TradeLog> filledBuys = tradeLogPort.findFilledBuys(userId, ticker);
-        for (TradeLog buy : filledBuys) {
-            tradeLogPort.updateStatus(buy.getId(), TradeLog.OrderStatus.CLOSED);
-        }
-        if (!filledBuys.isEmpty()) {
-            log.info("[PendingSell] Closed {} BUY records for {} {}", filledBuys.size(), userId, ticker);
         }
     }
 
@@ -531,18 +457,6 @@ public class TradingService implements TradingUseCase {
             }
             return !now.isBefore(start) && !now.isAfter(end);
         }).collect(Collectors.toCollection(ArrayList::new));
-    }
-
-    private void cleanupPendingOrders() {
-        ZonedDateTime threshold = ZonedDateTime.now(ZoneId.of("Asia/Seoul")).minusMinutes(STALE_PENDING_MINUTES);
-        List<TradeLog> stalePendings = tradeLogPort.findPendingBefore(threshold);
-        if (stalePendings.isEmpty()) return;
-
-        log.info("[Init] Stale PENDING 정리: {}건", stalePendings.size());
-        handlePendingBuys(stalePendings.stream()
-                .filter(p -> p.getAction() == StockOrder.OrderType.BUY).toList());
-        handlePendingSells(stalePendings.stream()
-                .filter(p -> p.getAction() == StockOrder.OrderType.SELL).toList());
     }
 
     private void cleanupTraining() {

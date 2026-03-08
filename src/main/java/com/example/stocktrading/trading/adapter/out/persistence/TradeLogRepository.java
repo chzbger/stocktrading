@@ -4,6 +4,7 @@ import com.example.stocktrading.trading.domain.StockOrder;
 import com.example.stocktrading.trading.domain.TradeLog;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -20,9 +21,10 @@ public interface TradeLogRepository extends JpaRepository<TradeLogEntity, Long> 
     // PENDING 주문 조회 (cancel check용, pending_orders 대체)
     List<TradeLogEntity> findByStatusAndTimestampBefore(TradeLog.OrderStatus status, ZonedDateTime threshold);
 
-    // FILLED BUY 조회 (SELL 체결 시 CLOSED로 전환용)
-    List<TradeLogEntity> findByUserIdAndTickerAndActionAndStatus(
-            Long userId, String ticker, StockOrder.OrderType action, TradeLog.OrderStatus status);
+    // SELL 체결 시 해당 SELL 이전의 FILLED BUY를 일괄 CLOSED 처리
+    @Modifying
+    @Query("UPDATE TradeLogEntity t SET t.status = 'CLOSED' WHERE t.userId = :uid AND t.ticker = :ticker AND t.action = 'BUY' AND t.status = 'FILLED' AND t.id < :beforeId")
+    int closeFilledBuysBefore(@Param("uid") Long uid, @Param("ticker") String ticker, @Param("beforeId") Long beforeId);
 
     // PENDING SELL 존재 여부 (충돌 방지 가드)
     boolean existsByUserIdAndTickerAndActionAndStatus(
