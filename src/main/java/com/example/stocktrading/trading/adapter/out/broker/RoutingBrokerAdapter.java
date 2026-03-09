@@ -82,7 +82,7 @@ public class RoutingBrokerAdapter implements BrokerApiPort {
     }
 
     @Override
-    @Cacheable(value = CacheConfig.CANDLE_1MIN, key = "'getAccountAsset-' + #ticker + '-' + limit")
+    @Cacheable(value = CacheConfig.CANDLE_1MIN, key = "'getRecentCandles-' + #ticker + '-' + #limit")
     public List<StockCandle> getRecentCandles(User user, String ticker, int limit) {
         return resolveContext(user)
                 .map(ctx -> getClient(ctx).getRecentCandles(ctx, ticker, limit))
@@ -90,7 +90,7 @@ public class RoutingBrokerAdapter implements BrokerApiPort {
     }
 
     @Override
-    @Cacheable(value = CacheConfig.CANDLE_5MIN, key = "'getRecentCandles5Min-' + #ticker + '-' + limit")
+    @Cacheable(value = CacheConfig.CANDLE_5MIN, key = "'getRecentCandles5Min-' + #ticker + '-' + #limit")
     public List<StockCandle> getRecentCandles5Min(User user, String ticker, int limit) {
         return resolveContext(user)
                 .map(ctx -> getClient(ctx).getRecentCandles5Min(ctx, ticker, limit))
