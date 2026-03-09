@@ -4,7 +4,6 @@ import com.example.stocktrading.trading.application.port.in.AssetUseCase;
 import com.example.stocktrading.trading.application.port.in.TradingUseCase;
 import com.example.stocktrading.trading.application.port.out.*;
 import com.example.stocktrading.trading.domain.*;
-import com.example.stocktrading.trading.domain.TrainingHistory.TrainingStatus;
 import com.example.stocktrading.user.application.port.out.NotificationPort;
 import com.example.stocktrading.user.application.port.out.UserPort;
 import com.example.stocktrading.user.domain.User;
@@ -30,7 +29,6 @@ public class TradingService implements TradingUseCase {
     private final UserPort userPort;
     private final TradeLogPort tradeLogPort;
     private final TradingTargetPort tradingTargetPort;
-    private final AiTrainingHistoryPort aiTrainingHistoryPort;
     private final BrokerApiPort brokerApiPort;
     private final AssetUseCase assetUseCase;
     private final AiModelPort aiModelPort;
@@ -44,9 +42,6 @@ public class TradingService implements TradingUseCase {
     @Override
     @Transactional
     public void initialize() {
-        // 학습 진행중 상태인것들 취소 처리
-        cleanupTraining();
-
         // 오래된 PENDING 취소
         handlePendingOrder();
     }
@@ -457,17 +452,6 @@ public class TradingService implements TradingUseCase {
             }
             return !now.isBefore(start) && !now.isAfter(end);
         }).collect(Collectors.toCollection(ArrayList::new));
-    }
-
-    private void cleanupTraining() {
-        List<TrainingHistory> trainingList = aiTrainingHistoryPort.findAll().stream()
-                .filter(h -> h.getStatus() == TrainingStatus.TRAINING)
-                .toList();
-
-        for (TrainingHistory history : trainingList) {
-            log.info("[Init] Marking stalled training as failed: {}", history.getTicker());
-            aiTrainingHistoryPort.save(history.withStatus(TrainingStatus.FAILED, "server restart"));
-        }
     }
 
     private void sleep(long ms) {
