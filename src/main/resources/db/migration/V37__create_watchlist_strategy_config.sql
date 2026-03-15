@@ -8,6 +8,6 @@ CREATE TABLE watchlist_strategy_config (
     max_holding INT DEFAULT 5,
     min_threshold DOUBLE DEFAULT 0.2,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(watchlist_id, strategy)
 );
