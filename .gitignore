@@ -3,7 +3,6 @@ build/
 .gradle/
 bin/
 *.class
-*.jar
 *.war
 
 # IDE
@@ -59,7 +58,6 @@ ai_module/
 
 # Project exclude paths
 /docs/
-/gradle/
 
 # etc
 .env.example
