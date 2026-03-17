@@ -4,7 +4,6 @@ import com.example.stocktrading.common.CacheConfig;
 import com.example.stocktrading.user.domain.BrokerInfo;
 import com.example.stocktrading.user.domain.User;
 import com.example.stocktrading.trading.application.port.out.BrokerApiPort;
-import com.example.stocktrading.trading.application.port.out.BrokerClient;
 import com.example.stocktrading.trading.domain.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

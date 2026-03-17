@@ -1,5 +1,6 @@
-package com.example.stocktrading.trading.application.port.out;
+package com.example.stocktrading.trading.adapter.out.broker;
 
+import com.example.stocktrading.trading.application.port.out.BrokerApiPort;
 import com.example.stocktrading.trading.domain.Asset;
 import com.example.stocktrading.trading.domain.BrokerContext;
 import com.example.stocktrading.trading.domain.StockCandle;

@@ -1,7 +1,6 @@
 package com.example.stocktrading.trading.adapter.out.broker;
 
 import com.example.stocktrading.trading.application.port.out.BrokerApiPort;
-import com.example.stocktrading.trading.application.port.out.BrokerClient;
 import com.example.stocktrading.trading.domain.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;

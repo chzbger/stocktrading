@@ -1,6 +1,5 @@
 package com.example.stocktrading.user.adapter.out.notification;
 
-import com.example.stocktrading.user.application.port.out.NotificationClient;
 import com.example.stocktrading.user.application.port.out.NotificationPort;
 import com.example.stocktrading.user.application.port.out.UserPort;
 import com.example.stocktrading.user.domain.User;

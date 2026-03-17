@@ -1,4 +1,4 @@
-package com.example.stocktrading.user.application.port.out;
+package com.example.stocktrading.user.adapter.out.notification;
 
 import com.example.stocktrading.user.domain.User;
 
