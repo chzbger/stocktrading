@@ -10,7 +10,6 @@ import com.example.stocktrading.user.domain.User;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -40,14 +39,11 @@ public class TradingService implements TradingUseCase {
     private record CandleData(List<StockCandle> minute, List<StockCandle> fiveMin) {}
 
     @Override
-    @Transactional
     public void initialize() {
-        // 오래된 PENDING 취소
         handlePendingOrder();
     }
 
     @Override
-    @Transactional
     public void executeRiskManagement() {
         List<TradingTarget> activeItems = new ArrayList<>(tradingTargetPort.findActiveItems());
         if (activeItems.isEmpty()) return;
@@ -81,7 +77,6 @@ public class TradingService implements TradingUseCase {
     }
 
     @Override
-    @Transactional
     public void executeAiTrading() {
         List<TradingTarget> activeItems = new ArrayList<>(tradingTargetPort.findActiveItems());
         if (activeItems.isEmpty()) return;
@@ -129,12 +124,10 @@ public class TradingService implements TradingUseCase {
         BrokerApiPort.OrderResult result = brokerApiPort.sendOrder(user, order);
 
         if (result.success()) {
-            // PENDING으로 저장 (orderId 포함)
             TradeLog tradeLog = TradeLog.createPending(
                     item.getUserId(), item.getTicker(), orderType, price, result.orderId());
             tradeLogPort.save(tradeLog);
         } else {
-            // FAILED로 즉시 저장
             TradeLog tradeLog = TradeLog.createFailed(
                     item.getUserId(), item.getTicker(), orderType, price);
             tradeLogPort.save(tradeLog);
@@ -153,7 +146,7 @@ public class TradingService implements TradingUseCase {
     /**
      * PENDING 주문 확인/취소 처리 (BUY/SELL 분리)
      */
-    private void handlePendingOrder() {
+    public void handlePendingOrder() {
         ZonedDateTime threshold = ZonedDateTime.now(ZoneId.of("Asia/Seoul")).minusMinutes(PENDING_TIMEOUT_MINUTES);
         List<TradeLog> expiredPendings = tradeLogPort.findPendingBefore(threshold);
         if (expiredPendings.isEmpty()) return;
@@ -170,7 +163,7 @@ public class TradingService implements TradingUseCase {
     /**
      * BUY PENDING 처리: 미체결이면 취소, 체결이면 FILLED
      */
-    private void handlePendingBuy(TradeLog pendingBuy) {
+    public void handlePendingBuy(TradeLog pendingBuy) {
         try {
             User user = userPort.findById(pendingBuy.getUserId()).orElse(null);
             if (pendingBuy.getOrderId() == null || user == null) {
@@ -195,7 +188,7 @@ public class TradingService implements TradingUseCase {
     /**
      * SELL PENDING 처리: 중복 제거 → 보유 확인 → 체결 시 BUY FILLED→CLOSED
      */
-    private void handlePendingSell(TradeLog pendingSell) {
+    public void handlePendingSell(TradeLog pendingSell) {
         try {
             User user = userPort.findById(pendingSell.getUserId()).orElse(null);
             if (pendingSell.getOrderId() == null || user == null) {
