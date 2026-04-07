@@ -30,6 +30,11 @@ public interface TradeLogRepository extends JpaRepository<TradeLogEntity, Long> 
     boolean existsByUserIdAndTickerAndActionAndStatus(
             Long userId, String ticker, StockOrder.OrderType action, TradeLog.OrderStatus status);
 
+    // 고아 FILLED BUY 일괄 CLOSED 처리 (브로커에 보유량 없을 때)
+    @Modifying
+    @Query("UPDATE TradeLogEntity t SET t.status = 'CLOSED' WHERE t.userId = :uid AND t.ticker = :ticker AND t.action = 'BUY' AND t.status = 'FILLED'")
+    int closeAllFilledBuys(@Param("uid") Long uid, @Param("ticker") String ticker);
+
     // 보유 수량 (FILLED BUY 개수)
     @Query("SELECT COUNT(t) FROM TradeLogEntity t WHERE t.userId = :uid AND t.ticker = :ticker AND t.action = 'BUY' AND t.status = 'FILLED'")
     int countFilledBuys(@Param("uid") Long uid, @Param("ticker") String ticker);

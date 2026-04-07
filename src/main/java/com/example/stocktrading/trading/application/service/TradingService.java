@@ -107,6 +107,11 @@ public class TradingService implements TradingUseCase {
         } else {
             quantity = getSellQuantity(user, item);
             if (quantity <= 0) {
+                // 브로커에 보유량 없음 — DB 고아 FILLED BUY 정리
+                int closed = tradeLogPort.closeAllFilledBuys(item.getUserId(), item.getTicker());
+                if (closed > 0) {
+                    log.info("[Order] {} 고아 FILLED BUY 정리 {}", closed, item.getTicker());
+                }
                 return new BrokerApiPort.OrderResult(false, "No holdings to sell");
             }
         }

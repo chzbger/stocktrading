@@ -19,6 +19,8 @@ public interface TradeLogPort {
 
     int closeFilledBuysBefore(Long userId, String ticker, Long beforeSellId);
 
+    int closeAllFilledBuys(Long userId, String ticker);
+
     boolean hasPendingSell(Long userId, String ticker);
 
     int getHoldingCount(Long userId, String ticker);

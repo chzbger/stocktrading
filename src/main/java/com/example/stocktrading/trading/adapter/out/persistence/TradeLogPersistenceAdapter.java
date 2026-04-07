@@ -63,6 +63,12 @@ public class TradeLogPersistenceAdapter implements TradeLogPort {
     }
 
     @Override
+    @Transactional
+    public int closeAllFilledBuys(Long userId, String ticker) {
+        return tradeLogRepository.closeAllFilledBuys(userId, ticker);
+    }
+
+    @Override
     public boolean hasPendingSell(Long userId, String ticker) {
         return tradeLogRepository.existsByUserIdAndTickerAndActionAndStatus(
                 userId, ticker, StockOrder.OrderType.SELL, TradeLog.OrderStatus.PENDING);
