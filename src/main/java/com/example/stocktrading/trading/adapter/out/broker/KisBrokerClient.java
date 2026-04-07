@@ -163,52 +163,75 @@ public class KisBrokerClient implements BrokerClient {
         return fetchStockCandles(ctx, ticker, limit, 5);
     }
 
+    private static final int KIS_MAX_NREC = 120;
+    private static final int KIS_MAX_PAGES = 5;
+
     private List<StockCandle> fetchStockCandles(BrokerContext ctx, String ticker, int limit, int nmin) {
-        // 해외주식분봉조회
+        // 해외주식분봉조회 (페이징: NREC 최대 120, KEYB로 이어서 조회)
         // https://apiportal.koreainvestment.com/apiservice-apiservice?/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice
         try {
             String token = tokenManager.getAccessToken(ctx.getAppKey(), ctx.getAppSecret());
             String exchCd = getPriceExchangeCode(ticker);
 
-            String response = restClient.get()
-                    .uri("/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice" +
-                            "?AUTH=&EXCD={excd}&SYMB={symb}&NMIN={nmin}&NREC={limit}" +
-                            "&PINC=1&NEXT=&FILL=&KEYB=",
-                            exchCd, ticker, nmin, limit)
-                    .headers(defaultHeaders(token, ctx))
-                    .header("tr_id", "HHDFS76950200")
-                    .header("custtype", "P")
-                    .retrieve()
-                    .body(String.class);
+            List<StockCandle> allCandles = new ArrayList<>();
+            String keyb = "";
+            int nrec = Math.min(limit, KIS_MAX_NREC);
+            int maxPages = Math.min((int) Math.ceil((double) limit / KIS_MAX_NREC), KIS_MAX_PAGES);
 
-            if (response != null) {
-                List<StockCandle> stockCandles = new ArrayList<>();
+            for (int page = 0; page < maxPages; page++) {
+                if (page > 0) {
+                    Thread.sleep(100);
+                }
+
+                String response = restClient.get()
+                        .uri("/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice" +
+                                "?AUTH=&EXCD={excd}&SYMB={symb}&NMIN={nmin}&NREC={nrec}" +
+                                "&PINC=1&NEXT=&FILL=&KEYB={keyb}",
+                                exchCd, ticker, nmin, nrec, keyb)
+                        .headers(defaultHeaders(token, ctx))
+                        .header("tr_id", "HHDFS76950200")
+                        .header("custtype", "P")
+                        .retrieve()
+                        .body(String.class);
+
+                if (response == null) break;
+
                 JsonNode root = objectMapper.readTree(response);
                 JsonNode output2 = root.path("output2");
-                if (output2.isArray()) {
-                    for (JsonNode node : output2) {
-                        String ymd = node.path("kymd").asText();
-                        String hms = node.path("khms").asText();
-                        if (ymd.isEmpty()) {
-                            ymd = ZonedDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
-                        }
+                if (!output2.isArray() || output2.isEmpty()) break;
 
-                        LocalDateTime localTs = LocalDateTime.parse(ymd + hms,
-                                DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
-                        ZonedDateTime ts = ZonedDateTime.of(localTs, ZoneId.of("Asia/Seoul"));
-
-                        stockCandles.add(0, StockCandle.builder()
-                                .timestamp(ts)
-                                .open(new BigDecimal(node.path("open").asText("0")))
-                                .high(new BigDecimal(node.path("high").asText("0")))
-                                .low(new BigDecimal(node.path("low").asText("0")))
-                                .close(new BigDecimal(node.path("last").asText("0")))
-                                .volume(new BigDecimal(node.path("evol").asText("0")))
-                                .build());
+                ZonedDateTime lastTs = null;
+                for (JsonNode node : output2) {
+                    String ymd = node.path("kymd").asText();
+                    String hms = node.path("khms").asText();
+                    if (ymd.isEmpty()) {
+                        ymd = ZonedDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
                     }
+
+                    LocalDateTime localTs = LocalDateTime.parse(ymd + hms,
+                            DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
+                    ZonedDateTime ts = ZonedDateTime.of(localTs, ZoneId.of("Asia/Seoul"));
+                    lastTs = ts;
+
+                    allCandles.add(0, StockCandle.builder()
+                            .timestamp(ts)
+                            .open(new BigDecimal(node.path("open").asText("0")))
+                            .high(new BigDecimal(node.path("high").asText("0")))
+                            .low(new BigDecimal(node.path("low").asText("0")))
+                            .close(new BigDecimal(node.path("last").asText("0")))
+                            .volume(new BigDecimal(node.path("evol").asText("0")))
+                            .build());
                 }
-                return stockCandles;
+
+                // 다음 KEYB = 마지막 캔들 시각에서 nmin분 전 (KIS API 스펙)
+                if (lastTs != null) {
+                    keyb = lastTs.minusMinutes(nmin)
+                            .format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
+                }
+                if (output2.size() < nrec || allCandles.size() >= limit) break;
             }
+
+            return allCandles;
         } catch (Exception e) {
             log.error("[KIS] StockCandle fetch failed for " + ticker + " (" + nmin + "min)", e);
         }

@@ -323,10 +323,10 @@ public class TradingService implements TradingUseCase {
             User user = entry.getValue();
 
             try {
-                List<StockCandle> minute = brokerApiPort.getRecentCandles(user, ticker, 60);
+                List<StockCandle> minute = brokerApiPort.getRecentCandles(user, ticker, 200);
                 minute = minute != null ? minute : List.of();
                 sleep(100);
-                List<StockCandle> fiveMin = brokerApiPort.getRecentCandles5Min(user, ticker, 120);
+                List<StockCandle> fiveMin = brokerApiPort.getRecentCandles5Min(user, ticker, 300);
                 fiveMin = fiveMin != null ? fiveMin : List.of();
                 sleep(100);
 
