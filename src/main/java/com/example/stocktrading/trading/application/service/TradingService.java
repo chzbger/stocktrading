@@ -93,7 +93,10 @@ public class TradingService implements TradingUseCase {
         // 2. AI 예측
         Map<String, AiModelPort.PredictionResult> predictions = fetchPredictions(activeItems, candleCache);
 
-        // 3. 주문 실행 + 알림
+        // 3. 장 마감 근처 BUY 시그널 → HOLD로 변환 (per-item)
+        filterNearCloseBuySignals(activeItems, userMap, predictions);
+
+        // 4. 주문 실행
         executeOrderByPrediction(activeItems, userMap, predictions, candleCache);
 
         log.info("[AI] ========== AI Trading End ==========");
@@ -450,6 +453,38 @@ public class TradingService implements TradingUseCase {
             }
             return !now.isBefore(start) && !now.isAfter(end);
         }).collect(Collectors.toCollection(ArrayList::new));
+    }
+
+    /**
+     * 장 마감 근처(종료시간 MAX_HOLDING_MINUTES분 전부터) 유저의 BUY 시그널을 HOLD(0)로 변환.
+     * per-item 판단이라 멀티유저 환경에서도 각자 독립적으로 적용.
+     */
+    private void filterNearCloseBuySignals(List<TradingTarget> items,
+                                           Map<Long, User> userMap,
+                                           Map<String, AiModelPort.PredictionResult> predictions) {
+        LocalTime now = ZonedDateTime.now(ZoneId.of("Asia/Seoul")).toLocalTime();
+
+        for (TradingTarget item : items) {
+            User user = userMap.get(item.getUserId());
+            if (user == null) continue;
+            LocalTime end = user.getTradingEndTime();
+            if (end == null) continue;
+
+            // 종료시간까지 남은 시간 계산 (자정 걸침 고려)
+            long minutesToClose = Duration.between(now, end).toMinutes();
+            if (minutesToClose < 0) minutesToClose += 24 * 60; // 자정 넘김 보정
+            if (minutesToClose >= MAX_HOLDING_MINUTES + 10) continue;
+
+            String predTicker = item.getPredictionTicker();
+            AiModelPort.PredictionResult result = predictions.get(predTicker);
+            if (result == null) continue;
+
+            int prediction = item.applyInverse(result.prediction());
+            if (prediction == 1) {
+                predictions.put(predTicker, new AiModelPort.PredictionResult(0, result.confidence(), result.probabilities()));
+                log.info("[NearClose] {} BUY → HOLD (장 마감 {}분 전)", item.getTicker(), MAX_HOLDING_MINUTES);
+            }
+        }
     }
 
     private void sleep(long ms) {
